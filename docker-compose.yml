@@ -1,0 +1,14 @@
+services:
+  app:
+    build: .
+    container_name: personal-finance
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./templates:/app/templates
+      - ./raw_data:/app/raw_data
+      - ./config:/app/config
+    environment:
+      - PF_RUNNING_IN_DOCKER=1
+    restart: unless-stopped

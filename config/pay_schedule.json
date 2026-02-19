@@ -1,0 +1,8 @@
+{
+  "events": [
+    { "name": "Salário Renan (40%)", "rule": "fixed_day", "day": 15, "person": "Renan" },
+    { "name": "Salário Renan (restante)", "rule": "last_business_day", "person": "Renan" },
+    { "name": "Salário Aline", "rule": "fixed_day", "day": 5, "person": "Aline" }
+  ]
+}
+

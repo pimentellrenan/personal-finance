@@ -1,0 +1,74 @@
+{
+  "Alimentação": ["Mercado", "Cerealista", "Padaria"],
+  "Despesas Dudu": ["Gerais", "Fraldas", "Atividades", "Cabelo", "Brinquedos", "Roupinhas", "Vacinas"],
+  "Educação": ["Material Escolar", "Mensalidade Escola", "Uniforme"],
+  "Fundos": [
+    "Carro – Manutenção & Reparos (fundo)",
+    "Casa – Itens & Utilidades (fundo)",
+    "Casa – Manutenção & Reparos (fundo)",
+    "Fundo de Férias",
+    "Fundo Dudu",
+    "Investimentos Aline",
+    "Investimentos Renan"
+  ],
+  "Gastos Aline": [
+    "Geral",
+    "Unha, Cabelo, Depilação",
+    "Vestuário",
+    "Bem-Estar",
+    "Alimentação",
+    "Ateliê",
+    "Atividade Física"
+  ],
+  "Gastos Renan": [
+    "Remédios",
+    "Academia",
+    "Barbearia e Cosméticos",
+    "Roupas",
+    "Suplementos",
+    "Ajuda Familiar / Doações",
+    "Acessórios & Hobbies",
+    "Assinaturas Pessoais",
+    "Consertos / Manutenção",
+    "Livros & Cursos",
+    "Mobilidade",
+    "Presentes (Renan)",
+    "Variados Renan (residual)"
+  ],
+  "Gastos Variáveis": [
+    "Casa – Itens de Jardinagem",
+    "Casa – Itens & Utilidades",
+    "Casa – Manutenção & Reparos",
+    "Dedetização",
+    "Eletrodomésticos",
+    "Papelaria",
+    "Presentes (Família)",
+    "Reembolsáveis",
+    "Residual"
+  ],
+  "Habitação": [
+    "Aluguel",
+    "Babá",
+    "Diarista",
+    "Energia",
+    "Água",
+    "Conta de Celular",
+    "Assinaturas",
+    "Internet",
+    "Jardineiro",
+    "Gás"
+  ],
+  "Lazer": ["Cafés", "Restaurantes", "Hospedagens", "Livraria", "Mídias e Acessórios", "Passagens", "Passeios"],
+  "Transporte": [
+    "Combustível",
+    "Mecânico",
+    "Pedágio",
+    "Lavagem",
+    "Estacionamentos",
+    "Aplicativo",
+    "IPVA",
+    "Multa",
+    "Seguro"
+  ],
+  "Saúde": ["Medicamentos – Família", "Farmácia Geral", "Consultas"]
+}

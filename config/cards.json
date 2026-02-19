@@ -1,0 +1,49 @@
+{
+  "cards": [
+    {
+      "id": "nubank",
+      "name": "Nubank Renan",
+      "closing_day": 12,
+      "due_day": 19,
+      "owner": "Renan"
+    },
+    {
+      "id": "nubank_aline",
+      "name": "Nubank Aline",
+      "closing_day": 28,
+      "due_day": 5,
+      "owner": "Aline"
+    },
+    {
+      "id": "xp",
+      "name": "XP",
+      "closing_day": 26,
+      "due_day": 5,
+      "closing_day_alt": [25],
+      "owner": "Família"
+    },
+    {
+      "id": "c6",
+      "name": "C6",
+      "closing_day": 13,
+      "due_day": 20,
+      "closing_day_alt": [12],
+      "owner": "Renan"
+    },
+    {
+      "id": "mercadopago",
+      "name": "Mercado Pago",
+      "closing_day": 10,
+      "due_day": 17,
+      "owner": "Renan"
+    },
+    {
+      "id": "portobank",
+      "name": "Porto Bank",
+      "closing_day": 15,
+      "due_day": 22,
+      "owner": "Família"
+    }
+  ]
+}
+

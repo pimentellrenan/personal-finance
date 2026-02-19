@@ -1,0 +1,19 @@
+.DS_Store
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Data
+data/
+raw_data/**
+!raw_data/.gitkeep
+
+# Templates (contém lançamentos)
+templates/**
+!templates/.gitkeep
