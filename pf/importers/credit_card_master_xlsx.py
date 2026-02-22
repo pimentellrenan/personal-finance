@@ -54,6 +54,7 @@ def read_credit_card_master_xlsx(
             headers[key] = c
 
     hash_col = _find_col(headers, ("hash (oculto)", "hash", "row_hash", "id"))
+    origin_id_col = _find_col(headers, ("origin id (oculto)", "origin_id", "origin id"))
 
     txn_col = _find_col(headers, ("data da compra", "data compra", "txn_date", "data"))
     due_col = _find_col(headers, ("data do vencimento", "vencimento", "statement_due_date"))
@@ -88,6 +89,10 @@ def read_credit_card_master_xlsx(
         if hash_col:
             rh_raw = ws.cell(row=r, column=hash_col).value
             rh = str(rh_raw or "").strip()
+        origin_id = None
+        if origin_id_col:
+            oid_raw = ws.cell(row=r, column=origin_id_col).value
+            origin_id = str(oid_raw or "").strip() or None
 
         txn_dt = parse_date(ws.cell(row=r, column=txn_col).value)
         due_dt = parse_date(ws.cell(row=r, column=due_col).value)
@@ -155,6 +160,7 @@ def read_credit_card_master_xlsx(
 
         rows.append(
             {
+                "origin_id": origin_id,
                 "row_hash": rh,
                 "txn_date": txn_dt.isoformat(),
                 "cash_date": due_dt.isoformat(),

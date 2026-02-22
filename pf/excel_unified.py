@@ -341,11 +341,13 @@ def build_unified_template_bytes(
         "Status",               # K
         "Notas",                # L
         "__chave (oculto)",     # M - hidden, for INDIRECT
+        "Origin ID (oculto)",   # N - hidden, stable UUID
     ]
     ws_cartao.append(cartao_headers)
     ws_cartao.freeze_panes = "A2"
     ws_cartao.column_dimensions["A"].hidden = True
     ws_cartao.column_dimensions["M"].hidden = True
+    ws_cartao.column_dimensions["N"].hidden = True
     
     # Data validations para Cartão
     dv_cat = DataValidation(type="list", formula1="=Categorias", allow_blank=True)
@@ -374,7 +376,7 @@ def build_unified_template_bytes(
         ws_cartao.cell(row=r, column=13, value=f'=IFERROR(VLOOKUP($D{r},Listas!$A$1:$B${lookup_end},2,FALSE),"")')
     
     # Larguras
-    for idx, w in enumerate([12, 14, 14, 25, 25, 18, 45, 14, 12, 12, 12, 30, 10], start=1):
+    for idx, w in enumerate([12, 14, 14, 25, 25, 18, 45, 14, 12, 12, 12, 30, 10, 10], start=1):
         ws_cartao.column_dimensions[get_column_letter(idx)].width = w
     
     # ========================================================================
@@ -390,10 +392,14 @@ def build_unified_template_bytes(
         "Reembolsável",         # G
         "Notas",                # H
         "__chave (oculto)",     # I - hidden
+        "Hash (oculto)",        # J - hidden
+        "Origin ID (oculto)",   # K - hidden, stable UUID
     ]
     ws_debitos.append(debito_headers)
     ws_debitos.freeze_panes = "A2"
     ws_debitos.column_dimensions["I"].hidden = True
+    ws_debitos.column_dimensions["J"].hidden = True
+    ws_debitos.column_dimensions["K"].hidden = True
     
     dv_cat_d = DataValidation(type="list", formula1="=Categorias", allow_blank=True)
     dv_sub_d = DataValidation(type="list", formula1="=INDIRECT($I2)", allow_blank=True)
@@ -413,7 +419,7 @@ def build_unified_template_bytes(
         lookup_end = max(1, len(categories))
         ws_debitos.cell(row=r, column=9, value=f'=IFERROR(VLOOKUP($B{r},Listas!$A$1:$B${lookup_end},2,FALSE),"")')
     
-    for idx, w in enumerate([14, 25, 25, 45, 14, 12, 12, 30, 10], start=1):
+    for idx, w in enumerate([14, 25, 25, 45, 14, 12, 12, 30, 10, 10, 10], start=1):
         ws_debitos.column_dimensions[get_column_letter(idx)].width = w
     
     # ========================================================================
@@ -425,9 +431,13 @@ def build_unified_template_bytes(
         "Descrição",            # C
         "Valor (R$)",           # D
         "Notas",                # E
+        "Hash (oculto)",        # F - hidden
+        "Origin ID (oculto)",   # G - hidden, stable UUID
     ]
     ws_receitas.append(receita_headers)
     ws_receitas.freeze_panes = "A2"
+    ws_receitas.column_dimensions["F"].hidden = True
+    ws_receitas.column_dimensions["G"].hidden = True
     
     dv_cat_r = DataValidation(type="list", formula1="=CategoriasReceita", allow_blank=True) if income_cats else None
     
@@ -438,7 +448,7 @@ def build_unified_template_bytes(
         if dv_cat_r:
             dv_cat_r.add(f"B{r}")
     
-    for idx, w in enumerate([14, 25, 45, 14, 30], start=1):
+    for idx, w in enumerate([14, 25, 45, 14, 30, 10, 10], start=1):
         ws_receitas.column_dimensions[get_column_letter(idx)].width = w
     
     # ========================================================================
@@ -456,6 +466,8 @@ def build_unified_template_bytes(
         "Data Pagamento",       # G - data que define em qual acerto entra
         "Notas",                # H
         "__chave_categoria (oculto)",  # I - Para fórmula VLOOKUP
+        "Hash (oculto)",        # J - hidden
+        "Origin ID (oculto)",   # K - hidden, stable UUID
     ]
     ws_contas.append(contas_headers)
     ws_contas.freeze_panes = "A2"
@@ -477,8 +489,10 @@ def build_unified_template_bytes(
         ws_contas.cell(row=r, column=9, value=f'=IFERROR(VLOOKUP($B{r},Listas!$A$1:$B${lookup_end},2,FALSE),"")')
     
     ws_contas.column_dimensions["I"].hidden = True
-    
-    for idx, w in enumerate([14, 28, 28, 35, 14, 14, 14, 20, 10], start=1):
+    ws_contas.column_dimensions["J"].hidden = True
+    ws_contas.column_dimensions["K"].hidden = True
+
+    for idx, w in enumerate([14, 28, 28, 35, 14, 14, 14, 20, 10, 10, 10], start=1):
         ws_contas.column_dimensions[get_column_letter(idx)].width = w
     
     # Salvar
@@ -556,15 +570,21 @@ def append_credit_card_rows(
     reemb_col = _find_col(headers, ("reembolsavel", "reembolsável")) or 10
     status_col = _find_col(headers, ("status",)) or 11
     notes_col = _find_col(headers, ("notas",)) or 12
-    
-    # Existing hashes
-    existing: set[str] = set()
+    origin_id_col = _find_col(headers, ("origin id (oculto)", "origin_id"))
+
+    # Existing hashes and origin_ids — used for deduplication
+    existing_hashes: set[str] = set()
+    existing_origin_ids: set[str] = set()
     last_row = 1
     for r in range(2, ws.max_row + 1):
         rh = str(ws.cell(row=r, column=hash_col).value or "").strip()
         if rh:
-            existing.add(rh)
+            existing_hashes.add(rh)
             last_row = r
+            if origin_id_col:
+                oid = str(ws.cell(row=r, column=origin_id_col).value or "").strip()
+                if oid:
+                    existing_origin_ids.add(oid)
             continue
         # Avoid jumping to very large row numbers because of stray values in a single cell.
         # Only treat row as "occupied" when it looks like a real credit-card entry.
@@ -581,21 +601,28 @@ def append_credit_card_rows(
         )
         if row_has_core_data:
             last_row = r
-    
+
     appended = 0
     today = date.today()
     next_row = last_row + 1
-    
+
     for row in rows:
         rh = str(row.get("row_hash") or "").strip()
-        if not rh or rh in existing:
+        oid = str(row.get("origin_id") or "").strip()
+
+        # Skip if already in sheet — check by origin_id first, then row_hash
+        if oid and oid in existing_origin_ids:
             continue
-        
+        if rh and rh in existing_hashes:
+            continue
+        if not rh:
+            continue
+
         txn_date = parse_date(row.get("txn_date"))
         due_date = parse_date(row.get("statement_due_date") or row.get("cash_date"))
         if txn_date is None or due_date is None:
             continue
-        
+
         ws.cell(row=next_row, column=hash_col, value=rh)
         ws.cell(row=next_row, column=txn_col, value=txn_date)
         ws.cell(row=next_row, column=due_col, value=due_date)
@@ -603,18 +630,22 @@ def append_credit_card_rows(
         ws.cell(row=next_row, column=sub_col, value=row.get("subcategory") or "")
         ws.cell(row=next_row, column=card_col, value=row.get("account") or "")
         ws.cell(row=next_row, column=desc_col, value=row.get("description") or "")
-        
+
         amt = row.get("amount")
         if amt is not None:
             ws.cell(row=next_row, column=amount_col, value=float(amt))
-        
+
         # Pago por Aline fica vazio por padrão - usuário preenche manualmente
         ws.cell(row=next_row, column=pago_aline_col, value="")
         ws.cell(row=next_row, column=reemb_col, value="Sim" if row.get("reimbursable") else "Não")
         ws.cell(row=next_row, column=status_col, value="Pago" if due_date <= today else "Em aberto")
         ws.cell(row=next_row, column=notes_col, value=row.get("notes") or "")
-        
-        existing.add(rh)
+        if origin_id_col and oid:
+            ws.cell(row=next_row, column=origin_id_col, value=oid)
+
+        existing_hashes.add(rh)
+        if oid:
+            existing_origin_ids.add(oid)
         appended += 1
         next_row += 1
     
@@ -773,25 +804,28 @@ def read_cartao_sheet(path: Path) -> list[dict[str, Any]]:
     reemb_col = _find_col(headers, ("reembolsavel", "reembolsável")) or 10
     status_col = _find_col(headers, ("status",)) or 11
     notes_col = _find_col(headers, ("notas",)) or 12
-    
+    origin_id_col = _find_col(headers, ("origin id (oculto)", "origin_id"))
+
     rows = []
     for r in range(2, ws.max_row + 1):
         rh = ws.cell(row=r, column=hash_col).value
         desc = ws.cell(row=r, column=desc_col).value
         if not rh and not desc:
             continue
-        
+
         amt = ws.cell(row=r, column=amount_col).value
         try:
             amount = float(amt) if amt else None
-        except:
+        except Exception:
             amount = parse_brl_number(amt)
-        
+
         reemb_val = str(ws.cell(row=r, column=reemb_col).value or "").strip().lower()
         pago_aline_val = str(ws.cell(row=r, column=pago_aline_col).value or "").strip().upper()
-        
+        origin_id = str(ws.cell(row=r, column=origin_id_col).value or "").strip() if origin_id_col else ""
+
         rows.append({
             "row_hash": str(rh or "").strip(),
+            "origin_id": origin_id,
             "txn_date": parse_date(ws.cell(row=r, column=txn_col).value),
             "due_date": parse_date(ws.cell(row=r, column=due_col).value),
             "category": str(ws.cell(row=r, column=cat_col).value or "").strip(),
@@ -948,6 +982,7 @@ def read_debitos_sheet(path: Path) -> list[dict[str, Any]]:
             headers[normalize_str(v)] = c
     
     hash_col = _find_col(headers, ("hash (oculto)", "hash", "row_hash"))
+    origin_id_col = _find_col(headers, ("origin id (oculto)", "origin_id"))
     date_col = _find_col(headers, ("data",)) or 1
     cat_col = _find_col(headers, ("categoria",)) or 2
     sub_col = _find_col(headers, ("subcategoria",)) or 3
@@ -956,25 +991,27 @@ def read_debitos_sheet(path: Path) -> list[dict[str, Any]]:
     pago_aline_col = _find_col(headers, ("pago por aline",)) or 6
     reemb_col = _find_col(headers, ("reembolsavel", "reembolsável")) or 7
     notes_col = _find_col(headers, ("notas",)) or 8
-    
+
     rows = []
     for r in range(2, ws.max_row + 1):
         desc = ws.cell(row=r, column=desc_col).value
         dt = ws.cell(row=r, column=date_col).value
         if not desc and not dt:
             continue
-        
+
         amt = ws.cell(row=r, column=amount_col).value
         try:
             amount = float(amt) if amt else None
-        except:
+        except Exception:
             amount = parse_brl_number(amt)
-        
+
         reemb_val = str(ws.cell(row=r, column=reemb_col).value or "").strip().lower()
         pago_aline_val = str(ws.cell(row=r, column=pago_aline_col).value or "").strip().upper()
-        
+        origin_id = str(ws.cell(row=r, column=origin_id_col).value or "").strip() if origin_id_col else ""
+
         rows.append({
             "row_hash": str(ws.cell(row=r, column=hash_col).value or "").strip() if hash_col else "",
+            "origin_id": origin_id,
             "date": parse_date(dt),
             "category": str(ws.cell(row=r, column=cat_col).value or "").strip(),
             "subcategory": str(ws.cell(row=r, column=sub_col).value or "").strip(),
@@ -984,7 +1021,7 @@ def read_debitos_sheet(path: Path) -> list[dict[str, Any]]:
             "reimbursable": reemb_val in ("sim", "s", "yes", "1", "true"),
             "notes": str(ws.cell(row=r, column=notes_col).value or "").strip(),
         })
-    
+
     return rows
 
 
@@ -1005,6 +1042,7 @@ def read_receitas_sheet(path: Path) -> list[dict[str, Any]]:
             headers[normalize_str(v)] = c
     
     hash_col = _find_col(headers, ("hash (oculto)", "hash", "row_hash"))
+    origin_id_col = _find_col(headers, ("origin id (oculto)", "origin_id"))
     date_col = _find_col(headers, ("data",)) or 1
     cat_col = _find_col(headers, ("categoria",)) or 2
     desc_col = _find_col(headers, ("descricao", "descrição")) or 3
@@ -1012,20 +1050,20 @@ def read_receitas_sheet(path: Path) -> list[dict[str, Any]]:
     recebido_aline_col = _find_col(headers, ("recebido por aline",))
     person_col = _find_col(headers, ("pessoa", "person"))
     notes_col = _find_col(headers, ("notas",)) or 5
-    
+
     rows = []
     for r in range(2, ws.max_row + 1):
         desc = ws.cell(row=r, column=desc_col).value
         dt = ws.cell(row=r, column=date_col).value
         if not desc and not dt:
             continue
-        
+
         amt = ws.cell(row=r, column=amount_col).value
         try:
             amount = float(amt) if amt else None
-        except:
+        except Exception:
             amount = parse_brl_number(amt)
-        
+
         recebido_aline_val = (
             str(ws.cell(row=r, column=recebido_aline_col).value or "").strip().upper()
             if recebido_aline_col
@@ -1033,9 +1071,11 @@ def read_receitas_sheet(path: Path) -> list[dict[str, Any]]:
         )
         person_val = str(ws.cell(row=r, column=person_col).value or "").strip() if person_col else ""
         person = person_val or ("Aline" if recebido_aline_val == "X" else "")
-        
+        origin_id = str(ws.cell(row=r, column=origin_id_col).value or "").strip() if origin_id_col else ""
+
         rows.append({
             "row_hash": str(ws.cell(row=r, column=hash_col).value or "").strip() if hash_col else "",
+            "origin_id": origin_id,
             "date": parse_date(dt),
             "category": str(ws.cell(row=r, column=cat_col).value or "").strip(),
             "description": str(desc or "").strip(),
@@ -1044,7 +1084,7 @@ def read_receitas_sheet(path: Path) -> list[dict[str, Any]]:
             "recebido_por_aline": recebido_aline_val == "X",
             "notes": str(ws.cell(row=r, column=notes_col).value or "").strip(),
         })
-    
+
     return rows
 
 
@@ -1070,6 +1110,7 @@ def read_contas_casa_sheet(path: Path) -> list[dict[str, Any]]:
             headers[normalize_str(v)] = c
     
     hash_col = _find_col(headers, ("hash (oculto)", "hash", "row_hash"))
+    origin_id_col = _find_col(headers, ("origin id (oculto)", "origin_id"))
     ref_col = _find_col(headers, ("mes referencia", "mês referência")) or 1
     cat_col = _find_col(headers, ("categoria", "category")) or 2
     subcat_col = _find_col(headers, ("subcategoria", "subcategory")) or 3
@@ -1079,20 +1120,20 @@ def read_contas_casa_sheet(path: Path) -> list[dict[str, Any]]:
     quem_col = _find_col(headers, ("pago por", "quem pagou", "pessoa", "person"))
     pag_col = _find_col(headers, ("data pagamento",)) or 7
     notes_col = _find_col(headers, ("notas",)) or 8
-    
+
     rows = []
     for r in range(2, ws.max_row + 1):
         ref = ws.cell(row=r, column=ref_col).value
         category = ws.cell(row=r, column=cat_col).value
         if not ref and not category:
             continue
-        
+
         amt = ws.cell(row=r, column=amount_col).value
         try:
             amount = float(amt) if amt else None
-        except:
+        except Exception:
             amount = parse_brl_number(amt)
-        
+
         ref_month = _parse_reference_month(ref)
 
         pago_aline_val = (
@@ -1105,9 +1146,12 @@ def read_contas_casa_sheet(path: Path) -> list[dict[str, Any]]:
             paid_by = "Aline" if pago_aline_val == "X" else "Renan"
         elif quem_col:
             paid_by = str(ws.cell(row=r, column=quem_col).value or "").strip() or None
-        
+
+        origin_id = str(ws.cell(row=r, column=origin_id_col).value or "").strip() if origin_id_col else ""
+
         rows.append({
             "row_hash": str(ws.cell(row=r, column=hash_col).value or "").strip() if hash_col else "",
+            "origin_id": origin_id,
             "reference_month": ref_month,
             "category": str(category or "").strip(),
             "subcategory": str(ws.cell(row=r, column=subcat_col).value or "").strip() or None,

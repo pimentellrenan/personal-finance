@@ -923,13 +923,22 @@ def main() -> None:
     _normalize_legacy_expense_categories(conn)
     _migrate_credit_card_statement_meta_keys(conn, cards)
 
+    pending_review_count = pf_db.count_pending_reviews(conn)
+
     main_pages = ["Dashboard", "Gerenciamento de Cartões", "Investimentos"]
-    advanced_pages = ["Transações", "Config"]
+    review_label = f"⚠️ Revisão ({pending_review_count})" if pending_review_count > 0 else "Revisão de Importação"
+    advanced_pages = ["Transações", review_label, "Config"]
     nav_options = main_pages + advanced_pages
     if "nav" not in st.session_state:
         st.session_state["nav"] = main_pages[0]
     current_nav = st.session_state.get("nav", main_pages[0])
-    legacy_map = {"Visão Geral": "Dashboard", "Importar": "Dashboard", "Rotina": "Dashboard"}
+    legacy_map = {
+        "Visão Geral": "Dashboard",
+        "Importar": "Dashboard",
+        "Rotina": "Dashboard",
+        "Acerto Mensal": "Transações",
+        "Revisão de Importação": review_label,
+    }
     current_nav = legacy_map.get(str(current_nav), current_nav)
     if current_nav not in nav_options:
         current_nav = main_pages[0]
@@ -1088,8 +1097,8 @@ def main() -> None:
                 placeholders = ", ".join(["?"] * len(imported_paths))
                 rows_db = conn.execute(
                     f"""
-                    SELECT row_hash, txn_date, cash_date, statement_due_date, amount,
-                           description, account, category, subcategory, person, 
+                    SELECT origin_id, row_hash, txn_date, cash_date, statement_due_date, amount,
+                           description, account, category, subcategory, person,
                            reimbursable, notes
                     FROM transactions
                     WHERE payment_method = 'credit_card'
@@ -2608,7 +2617,7 @@ def main() -> None:
                 )
 
                 st.altair_chart((bars + total_line).properties(height=420), use_container_width=True)
-    elif nav == "Acerto Mensal":
+    elif nav == "Transações":
         st.subheader("💰 Acerto Mensal com Aline")
         
         # Meses para seleção amigável
@@ -3299,6 +3308,102 @@ def main() -> None:
                         st.rerun()
                     except Exception as e:
                         st.error(f"Falha ao salvar categorias: {e}")
+    elif nav == review_label:
+        st.subheader("🔍 Revisão de Importação")
+        st.caption(
+            "Transações importadas via CSV que possivelmente duplicam um lançamento manual no Excel. "
+            "Escolha a ação para cada item."
+        )
+
+        reviews = pf_db.get_pending_reviews(conn)
+        if not reviews:
+            st.success("✅ Nenhuma transação aguardando revisão.")
+        else:
+            st.info(f"**{len(reviews)}** transação(ões) aguardando revisão.")
+            for rev in reviews:
+                inc = rev.get("incoming", {})
+                inc_date = inc.get("txn_date", "—")
+                inc_desc = inc.get("description", "—")
+                inc_amount = inc.get("amount", 0.0)
+                inc_account = inc.get("account", "—")
+
+                # Fetch candidate transactions from DB
+                cand_ids: list[int] = rev.get("candidate_ids", [])
+                candidates: list[dict] = []
+                for cid in cand_ids:
+                    row = conn.execute(
+                        "SELECT * FROM transactions WHERE id = ?", (cid,)
+                    ).fetchone()
+                    if row:
+                        candidates.append(dict(row))
+
+                rev_id = rev["id"]
+                with st.expander(
+                    f"📅 {inc_date}  |  {inc_desc}  |  R$ {abs(float(inc_amount)):.2f}",
+                    expanded=True,
+                ):
+                    col_csv, col_manual = st.columns(2)
+                    with col_csv:
+                        st.markdown("**Importado do CSV**")
+                        st.write(f"Data: `{inc_date}`")
+                        st.write(f"Descrição: `{inc_desc}`")
+                        st.write(f"Valor: `R$ {float(inc_amount):.2f}`")
+                        st.write(f"Cartão: `{inc_account}`")
+                        st.write(f"Arquivo: `{inc.get('source_file', '—')}`")
+                    with col_manual:
+                        st.markdown("**Lançamento(s) existente(s)**")
+                        if candidates:
+                            for cand in candidates:
+                                st.write(f"Data: `{cand.get('txn_date', '—')}`")
+                                st.write(f"Descrição: `{cand.get('description', '—')}`")
+                                st.write(f"Valor: `R$ {float(cand.get('amount', 0)):.2f}`")
+                                st.write(f"Categoria: `{cand.get('category') or '—'}`")
+                                st.write(f"Subcategoria: `{cand.get('subcategory') or '—'}`")
+                                st.write(f"Pessoa: `{cand.get('person') or '—'}`")
+                                st.write(f"Notas: `{cand.get('notes') or '—'}`")
+                                st.divider()
+                        else:
+                            st.write("_(não encontrado)_")
+
+                    # Select which candidate to merge into (if multiple)
+                    merge_target_id: int | None = cand_ids[0] if cand_ids else None
+                    if len(cand_ids) > 1:
+                        cand_labels = [
+                            f"[{c.get('id')}] {c.get('description', '')} {c.get('txn_date', '')}"
+                            for c in candidates
+                        ]
+                        sel_idx = st.selectbox(
+                            "Mesclar com qual lançamento?",
+                            options=list(range(len(cand_ids))),
+                            format_func=lambda i: cand_labels[i],
+                            key=f"sel_{rev_id}",
+                        )
+                        merge_target_id = cand_ids[sel_idx]
+
+                    b1, b2, b3 = st.columns(3)
+                    with b1:
+                        if st.button("✅ Mesclar (manter edições)", key=f"merge_{rev_id}",
+                                     help="Mantém o lançamento manual e atualiza com dados do CSV"):
+                            pf_db.resolve_pending_review(
+                                conn, review_id=rev_id, resolution="merge",
+                                merge_into_id=merge_target_id
+                            )
+                            st.rerun()
+                    with b2:
+                        if st.button("➕ Criar como nova", key=f"create_{rev_id}",
+                                     help="Insere o lançamento CSV como uma nova transação separada"):
+                            pf_db.resolve_pending_review(
+                                conn, review_id=rev_id, resolution="create_new"
+                            )
+                            st.rerun()
+                    with b3:
+                        if st.button("🗑️ Ignorar CSV", key=f"skip_{rev_id}",
+                                     help="Descarta o lançamento do CSV, mantém somente o manual"):
+                            pf_db.resolve_pending_review(
+                                conn, review_id=rev_id, resolution="skip"
+                            )
+                            st.rerun()
+
     elif nav == "Config":
         st.subheader("Cartões")
         st.json({k: vars(v) for k, v in cards.items()})
