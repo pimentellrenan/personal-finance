@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import html
 import os
@@ -26,7 +26,6 @@ from pf import queries as pf_queries
 from pf import rules_engine as pf_rules_engine
 from pf import templates as pf_templates
 from pf import reconciliation as pf_recon
-from pf import autocategorize as pf_autocategorize
 from pf.importers.credit_card_csv import guess_card_id as guess_card_id_csv
 from pf.utils import clamp_day, last_business_day, month_add, normalize_str, sha256_text
 
@@ -35,8 +34,8 @@ from datetime import datetime
 from typing import Any
 
 
-APP_TITLE = "FinanÃ§as Pessoais"
-# Oculta toda a UI de "Acerto Mensal" (mantÃ©m backend).
+APP_TITLE = "Finanças Pessoais"
+# Oculta toda a UI de "Acerto Mensal" (mantém backend).
 SHOW_ACERTO_UI = os.getenv("PF_SHOW_ACERTO_UI", "0").strip() == "1"
 
 
@@ -56,7 +55,7 @@ def _backup_database(db_path: Path, backup_dir: Path) -> None:
 
 
 def _backup_unified_excel(path: Path, backup_dir: Path, *, keep_last: int = 30) -> Path | None:
-    """Cria backup versionado do financas.xlsx e mantÃ©m sÃ³ os mais recentes."""
+    """Cria backup versionado do financas.xlsx e mantém só os mais recentes."""
     if not path.exists():
         return None
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -127,8 +126,8 @@ def _to_date(v) -> date | None:
 
 def _default_statement_closing_date(due_dt: date, *, closing_day: int) -> date:
     """
-    Default de fechamento a partir do vencimento + dia de fechamento do cartÃ£o.
-    Regra prÃ¡tica: se o vencimento cai antes/do mesmo dia do fechamento, o fechamento Ã© no mÃªs anterior.
+    Default de fechamento a partir do vencimento + dia de fechamento do cartão.
+    Regra prática: se o vencimento cai antes/do mesmo dia do fechamento, o fechamento é no mês anterior.
     """
     closing_day = int(closing_day)
     if due_dt.day <= closing_day:
@@ -163,15 +162,15 @@ CUSTOM_CSS = """
     }
 
     /* ============================================
-       BOTÃ•ES INVISÃVEIS PARA CARDS CLICÃVEIS
+       BOTÕES INVISÍVEIS PARA CARDS CLICÁVEIS
        ============================================ */
-    /* Container de card clicÃ¡vel - posiÃ§Ã£o relativa para overlay */
+    /* Container de card clicável - posição relativa para overlay */
     div[data-testid="stVerticalBlockBorderWrapper"]:has(.cc-card-wrapper),
     div[data-testid="stVerticalBlockBorderWrapper"]:has(.budget-card-wrapper) {
         position: relative !important;
     }
     
-    /* Esconder o botÃ£o visualmente mas manter clicÃ¡vel - versÃ£o ultra-agressiva */
+    /* Esconder o botão visualmente mas manter clicável - versão ultra-agressiva */
     div[data-testid="stVerticalBlockBorderWrapper"]:has(.cc-card-wrapper) > div > div > div:last-child,
     div[data-testid="stVerticalBlockBorderWrapper"]:has(.budget-card-wrapper) > div > div > div:last-child {
         position: absolute !important;
@@ -239,7 +238,7 @@ CUSTOM_CSS = """
         padding: 0.2rem 0.55rem !important;
     }
 
-    /* Cards de mÃ©tricas */
+    /* Cards de métricas */
     div[data-testid="stMetric"] {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         padding: 1rem;
@@ -254,7 +253,7 @@ CUSTOM_CSS = """
         color: white !important;
     }
     
-    /* CartÃµes de status */
+    /* Cartões de status */
     .status-card {
         padding: 1.5rem;
         border-radius: 12px;
@@ -281,7 +280,7 @@ CUSTOM_CSS = """
     .progress-warning { background: #f5a623; }
     .progress-danger { background: #f5576c; }
 
-    /* Card de orÃ§amento clicÃ¡vel */
+    /* Card de orçamento clicável */
     .budget-card-wrapper {
         position: relative;
         margin-bottom: 0.5rem;
@@ -345,7 +344,7 @@ CUSTOM_CSS = """
         margin-top: 0.4rem;
     }
     
-    /* Wrapper para budget card clicÃ¡vel */
+    /* Wrapper para budget card clicável */
     .budget-card-wrapper {
         position: relative;
         cursor: pointer;
@@ -359,7 +358,7 @@ CUSTOM_CSS = """
         max-width: 96vw !important;
     }
 
-    /* Cards clicÃ¡veis de cartÃ£o - Design Moderno */
+    /* Cards clicáveis de cartão - Design Moderno */
     .cc-grid {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -373,7 +372,7 @@ CUSTOM_CSS = """
         .cc-grid { grid-template-columns: 1fr; }
     }
     
-    /* Wrapper para card clicÃ¡vel - contÃ©m card + botÃ£o invisÃ­vel */
+    /* Wrapper para card clicável - contém card + botão invisível */
     .cc-card-wrapper {
         position: relative;
         cursor: pointer;
@@ -412,7 +411,7 @@ CUSTOM_CSS = """
         transform: translateY(-2px) scale(1.01);
     }
     
-    /* Ãcone de seta no card */
+    /* Ícone de seta no card */
     .cc-card-arrow {
         position: absolute;
         top: 1rem;
@@ -426,7 +425,7 @@ CUSTOM_CSS = """
         transform: translateX(4px);
     }
     
-    /* Cores especÃ­ficas por tipo de cartÃ£o */
+    /* Cores específicas por tipo de cartão */
     .cc-card-debit {
         background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
     }
@@ -496,11 +495,11 @@ CUSTOM_CSS = """
         gap: 0.35rem;
     }
     .cc-card-sub::before {
-        content: "ðŸ“…";
+        content: "📅";
         font-size: 0.85rem;
     }
 
-    /* SeÃ§Ãµes */
+    /* Seções */
     .section-header {
         font-size: 1.25rem;
         font-weight: 600;
@@ -572,7 +571,7 @@ CUSTOM_CSS = """
     .fatura-badge-aberta { background: #F3F4F6; color: #6B7280; }
     
     /* ============================================
-       CARD DE REEMBOLSÃVEIS
+       CARD DE REEMBOLSÁVEIS
        ============================================ */
     .reimb-card {
         background: linear-gradient(135deg, rgba(255, 255, 255, 0.10) 0%, rgba(255, 255, 255, 0.05) 100%);
@@ -644,14 +643,14 @@ _COLS_PTBR = {
     "txn_date": "Data da compra",
     "cash_date": "Data (impacto)",
     "amount": "Valor (R$)",
-    "description": "DescriÃ§Ã£o",
+    "description": "Descrição",
     "payment_method": "Forma de pagamento",
-    "account": "Conta/CartÃ£o",
+    "account": "Conta/Cartão",
     "category": "Categoria",
     "subcategory": "Subcategoria",
-    "reimbursable": "ReembolsÃ¡vel",
-    "reference": "ReferÃªncia",
-    "notes": "ObservaÃ§Ãµes",
+    "reimbursable": "Reembolsável",
+    "reference": "Referência",
+    "notes": "Observações",
     "hash": "Hash",
     "file_path": "Arquivo",
     "importer": "Importador",
@@ -672,10 +671,10 @@ _COLS_PTBR = {
 
 _PAYMENT_METHOD_PTBR = {
     "income": "Receita",
-    "credit_card": "CartÃ£o de crÃ©dito",
-    "debit": "DÃ©bito",
+    "credit_card": "Cartão de crédito",
+    "debit": "Débito",
     "pix": "PIX",
-    "transfer": "TransferÃªncia",
+    "transfer": "Transferência",
     "cash": "Dinheiro",
 }
 
@@ -683,8 +682,8 @@ _PAYMENT_METHOD_PTBR = {
 @st.cache_resource
 def _get_conn(db_path_str: str):
     """
-    Cria e retorna conexÃ£o com o banco de dados.
-    O check_same_thread=False permite usar a conexÃ£o em diferentes threads do Streamlit.
+    Cria e retorna conexão com o banco de dados.
+    O check_same_thread=False permite usar a conexão em diferentes threads do Streamlit.
     """
     conn = pf_db.connect(Path(db_path_str), check_same_thread=False)
     pf_db.migrate(conn)
@@ -723,7 +722,7 @@ def _display_df_ptbr(df: pd.DataFrame) -> pd.DataFrame:
             lambda v: _PAYMENT_METHOD_PTBR.get(str(v), v)
         )
 
-    if "ReembolsÃ¡vel" in out.columns:
+    if "Reembolsável" in out.columns:
         def _to_sim_nao(v) -> str:
             if v is None:
                 return ""
@@ -733,16 +732,16 @@ def _display_df_ptbr(df: pd.DataFrame) -> pd.DataFrame:
             except Exception:
                 pass
             try:
-                return "Sim" if int(v) == 1 else "NÃ£o"
+                return "Sim" if int(v) == 1 else "Não"
             except Exception:
                 s = str(v).strip().lower()
                 if s in ("sim", "s", "yes", "y", "true", "1"):
                     return "Sim"
-                if s in ("nao", "nÃ£o", "n", "no", "false", "0"):
-                    return "NÃ£o"
+                if s in ("nao", "não", "n", "no", "false", "0"):
+                    return "Não"
                 return str(v)
 
-        out["ReembolsÃ¡vel"] = out["ReembolsÃ¡vel"].apply(_to_sim_nao)
+        out["Reembolsável"] = out["Reembolsável"].apply(_to_sim_nao)
 
     return out
 
@@ -827,9 +826,9 @@ def _normalize_legacy_expense_categories(conn) -> None:
 
 def _migrate_credit_card_statement_meta_keys(conn, cards: dict) -> None:
     """
-    MigraÃ§Ã£o leve (retrocompatibilidade):
-    versÃµes anteriores salvaram o `card_source` como "excel_credit_card", que nÃ£o Ã© Ãºnico por cartÃ£o.
-    Tentamos reatribuir para o id do cartÃ£o (ou fallback por nome) quando o vencimento mapeia para um Ãºnico cartÃ£o.
+    Migração leve (retrocompatibilidade):
+    versões anteriores salvaram o `card_source` como "excel_credit_card", que não é único por cartão.
+    Tentamos reatribuir para o id do cartão (ou fallback por nome) quando o vencimento mapeia para um único cartão.
     """
     try:
         rows = conn.execute(
@@ -901,12 +900,12 @@ def _migrate_credit_card_statement_meta_keys(conn, cards: dict) -> None:
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, layout="wide")
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-    st.title(f"ðŸ’° {APP_TITLE}")
+    st.title(f"💰 {APP_TITLE}")
 
     base_dir = pf_config.repo_root()
     paths = pf_db.default_paths(base_dir)
     
-    # Backup automÃ¡tico do banco de dados
+    # Backup automático do banco de dados
     _backup_database(paths.db_path, base_dir / "raw_data")
 
     cards = pf_config.load_cards_config(base_dir)
@@ -924,13 +923,13 @@ def main() -> None:
     _normalize_legacy_expense_categories(conn)
     _migrate_credit_card_statement_meta_keys(conn, cards)
 
-    main_pages = ["Dashboard", "Gerenciamento de CartÃµes", "Investimentos"]
-    advanced_pages = ["TransaÃ§Ãµes", "Config"]
+    main_pages = ["Dashboard", "Gerenciamento de Cartões", "Investimentos"]
+    advanced_pages = ["Transações", "Config"]
     nav_options = main_pages + advanced_pages
     if "nav" not in st.session_state:
         st.session_state["nav"] = main_pages[0]
     current_nav = st.session_state.get("nav", main_pages[0])
-    legacy_map = {"VisÃ£o Geral": "Dashboard", "Importar": "Dashboard", "Rotina": "Dashboard"}
+    legacy_map = {"Visão Geral": "Dashboard", "Importar": "Dashboard", "Rotina": "Dashboard"}
     current_nav = legacy_map.get(str(current_nav), current_nav)
     if current_nav not in nav_options:
         current_nav = main_pages[0]
@@ -940,17 +939,13 @@ def main() -> None:
         st.rerun()
 
     nav = st.sidebar.radio(
-        "PÃ¡gina",
+        "Página",
         nav_options,
         index=nav_options.index(current_nav),
         key="nav",
         label_visibility="collapsed",
     )
-    with st.sidebar.expander("Info", expanded=False):
-        st.caption(f"DB (SQLite): `{paths.db_path}`")
-        st.caption("Entradas: `raw_data/` | Excel do cartÃ£o: `templates/`")
-
-    # SeÃ§Ã£o de AtualizaÃ§Ã£o (CSV/Excel) na sidebar
+    # Seção de Atualização (CSV/Excel) na sidebar
     raw_dir = base_dir / "raw_data"
     templates_dir = base_dir / "templates"
     unified_xlsx = templates_dir / "financas.xlsx"
@@ -958,7 +953,7 @@ def main() -> None:
     csv_files = [p for p in files if p.suffix.lower() == ".csv"]
     card_ids = list(cards.keys())
 
-    with st.sidebar.expander("ðŸ”„ AtualizaÃ§Ã£o", expanded=True):
+    with st.sidebar.expander("🔄 Atualização", expanded=True):
         st.caption("CSV/Excel")
         is_docker = _is_running_in_docker()
 
@@ -973,74 +968,66 @@ def main() -> None:
         excel_bytes = unified_xlsx.read_bytes() if unified_xlsx.exists() else None
         if excel_bytes:
             st.download_button(
-                "ðŸ“Š Abrir Excel (baixar)",
+                "📊 Abrir Excel (baixar)",
                 data=excel_bytes,
                 file_name="financas.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width="stretch",
             )
         else:
-            st.info("O Excel serÃ¡ criado automaticamente na primeira sincronizaÃ§Ã£o.")
+            st.info("O Excel será criado automaticamente na primeira sincronização.")
 
         if not is_docker:
-            if st.button("ðŸ–¥ï¸ Abrir Excel (no servidor)", key="sidebar_open_unified", width="stretch"):
+            if st.button("🖥️ Abrir Excel (no servidor)", key="sidebar_open_unified", width="stretch"):
                 with st.spinner("Abrindo..."):
                     _open_file(unified_xlsx)
                 st.rerun()
         else:
-            st.caption("Rodando em Docker: nÃ£o dÃ¡ para abrir Excel no servidor. Use baixar/enviar.")
+            st.caption("Rodando em Docker: não dá para abrir Excel no servidor. Use baixar/enviar.")
 
         uploaded_xlsx = st.file_uploader(
-            "ðŸ“¤ Enviar Excel atualizado (.xlsx)",
+            "📤 Enviar Excel atualizado (.xlsx)",
             type=["xlsx"],
             key="sidebar_upload_unified_xlsx",
         )
         if uploaded_xlsx is not None:
-            if st.button(
-                "ðŸ’¾ Salvar upload (substitui templates/financas.xlsx)",
-                key="sidebar_save_unified_xlsx",
-                width="stretch",
-                help="Dica: depois clique em 'âœ… Sincronizar Excel â†’ DB'.",
-            ):
+            upload_hash = sha256_text(uploaded_xlsx.getvalue().hex())
+            if st.session_state.get("last_uploaded_xlsx_hash") != upload_hash:
                 templates_dir.mkdir(parents=True, exist_ok=True)
                 bk = _backup_unified_excel(unified_xlsx, base_dir / "raw_data" / "backups" / "financas")
                 unified_xlsx.write_bytes(uploaded_xlsx.getvalue())
+                card_owner_by_name = {c.name: c.owner for c in cards.values()}
+                res = pf_ingest.sync_unified_from_excel(
+                    conn,
+                    path=unified_xlsx,
+                    card_owner_by_name=card_owner_by_name,
+                )
+                def _fmt(sr: pf_db.SyncResult) -> str:
+                    return f"{sr.inserted + sr.updated + sr.deleted}"
                 if bk is not None:
                     st.caption(f"Backup criado: `{bk.name}`")
-                st.success("âœ… Upload salvo como templates/financas.xlsx")
+                st.success(
+                    "✅ Upload salvo e sincronizado. "
+                    f"CC:{_fmt(res.credit_card)} D:{_fmt(res.debit)} R:{_fmt(res.income)} C:{_fmt(res.household)}"
+                )
+                st.session_state["last_uploaded_xlsx_hash"] = upload_hash
                 st.rerun()
 
         uploaded_statement_csvs = st.file_uploader(
-            "ðŸ“¤ Enviar faturas CSV (.csv)",
+            "📤 Enviar faturas CSV (.csv)",
             type=["csv"],
             accept_multiple_files=True,
             key="sidebar_upload_statement_csvs",
-            help="Arquivos enviados aqui sÃ£o processados no botÃ£o de importaÃ§Ã£o e removidos em seguida.",
+            help="Arquivos enviados aqui são processados no botão de importação e removidos em seguida.",
         )
         if uploaded_statement_csvs:
             st.caption(f"{len(uploaded_statement_csvs)} arquivo(s) pronto(s) para importar")
-
-        if unified_xlsx.exists():
-            if st.button("ðŸ¤– Auto-categorizar", key="sidebar_autocat_cc", width="stretch"):
-                try:
-                    card_owner_by_name = {c.name: c.owner for c in cards.values()}
-                    n = pf_autocategorize.autofill_unified_credit_card_sheet(
-                        unified_xlsx,
-                        expense_categories_tree=expense_categories_tree,
-                        card_owner_by_name=card_owner_by_name,
-                    )
-                    st.success(f"âœ… {n} linha(s)")
-                    if not is_docker:
-                        _open_file(unified_xlsx)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"âŒ {e}")
 
         force = bool(st.session_state.get("dashboard_force", False))
         
         has_uploaded_csvs = bool(uploaded_statement_csvs)
         if st.button(
-            "ðŸ“¥ Importar CSVs",
+            "📥 Importar CSVs",
             key="sidebar_import_all",
             disabled=not (csv_files or has_uploaded_csvs),
             width="stretch",
@@ -1049,7 +1036,6 @@ def main() -> None:
             skipped_msgs: list[str] = []
             error_msgs: list[str] = []
             imported_paths: list[str] = []
-            default_card_id = card_ids[0] if card_ids else None
             uploaded_temp_paths: list[Path] = []
             try:
                 if uploaded_statement_csvs:
@@ -1062,7 +1048,13 @@ def main() -> None:
                 to_import = [*csv_files, *uploaded_temp_paths]
                 for p in to_import:
                     try:
-                        card_id = guess_card_id_csv(p) or default_card_id or card_ids[0]
+                        card_id = guess_card_id_csv(p)
+                        if not card_id or card_id not in cards:
+                            error_msgs.append(
+                                f"{p.name}: cartão não identificado pelo nome do arquivo. "
+                                "Use prefixo como XP_, Nubank_, C6_, MercadoPago_ ou PortoBank_."
+                            )
+                            continue
                         res = pf_ingest.ingest_credit_card_csv(
                             conn,
                             path=p,
@@ -1086,11 +1078,11 @@ def main() -> None:
                         pass
 
             if imported_msgs:
-                st.success("âœ… " + ", ".join(imported_msgs))
+                st.success("✅ " + ", ".join(imported_msgs))
             if skipped_msgs:
-                st.info("â­ï¸ JÃ¡ importados")
+                st.info("⏭️ Já importados")
             if error_msgs:
-                st.error("âŒ " + ", ".join(error_msgs))
+                st.error("❌ " + ", ".join(error_msgs))
 
             if imported_paths:
                 placeholders = ", ".join(["?"] * len(imported_paths))
@@ -1114,111 +1106,12 @@ def main() -> None:
                 )
             st.rerun()
 
-        if st.button("âœ… Sincronizar Excel â†’ DB", key="sidebar_apply_cc", disabled=not unified_xlsx.exists(), width="stretch"):
-            try:
-                bk = _backup_unified_excel(unified_xlsx, base_dir / "raw_data" / "backups" / "financas")
-                card_owner_by_name = {c.name: c.owner for c in cards.values()}
-                res = pf_ingest.sync_unified_from_excel(
-                    conn,
-                    path=unified_xlsx,
-                    card_owner_by_name=card_owner_by_name,
-                )
-                def _fmt(sr: pf_db.SyncResult) -> str:
-                    return f"{sr.inserted + sr.updated + sr.deleted}"
-                if bk is not None:
-                    st.caption(f"Backup criado: `{bk.name}`")
-                st.success(f"âœ… CC:{_fmt(res.credit_card)} D:{_fmt(res.debit)} R:{_fmt(res.income)} C:{_fmt(res.household)}")
-                st.rerun()
-            except Exception as e:
-                st.error(f"âŒ {e}")
-
-    # Zona de perigo (resets granulares)
-    with st.sidebar.expander("âš ï¸ Zona de Perigo", expanded=False):
-        st.caption("Dica: o app cria backup automÃ¡tico em `raw_data/backup_db.zip` quando abre.")
-
-        def _count(table: str) -> int:
-            try:
-                return int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] or 0)
-            except Exception:  # noqa: BLE001
-                return 0
-
-        counts = {
-            "transactions": _count("transactions"),
-            "imports": _count("imports"),
-            "cc_statements": _count("credit_card_statements"),
-            "investments": _count("investments"),
-            "investment_monthly": _count("investment_monthly"),
-        }
-        st.caption(
-            "Linhas: "
-            f"transaÃ§Ãµes={counts['transactions']} | "
-            f"imports={counts['imports']} | "
-            f"faturas(meta)={counts['cc_statements']} | "
-            f"investimentos={counts['investments']} ({counts['investment_monthly']} meses)"
-        )
-
-        actions = {
-            "â€” Selecione â€”": ("none", ""),
-            "Resetar lanÃ§amentos do Excel (.xlsx)": ("xlsx_txns", "RESET XLSX"),
-            "Resetar lanÃ§amentos (TransaÃ§Ãµes + ImportaÃ§Ãµes)": ("txns", "RESET TRANSACOES"),
-            "Resetar gerenciamento de cartÃµes (calendÃ¡rio/status das faturas)": ("cc_meta", "RESET CARTOES"),
-            "Resetar investimentos": ("invest", "RESET INVESTIMENTOS"),
-            "Resetar TUDO (transaÃ§Ãµes + faturas + investimentos)": ("all", "RESET TUDO"),
-        }
-
-        label = st.selectbox("AÃ§Ã£o", list(actions.keys()), index=0, key="danger_action_label")
-        action_key, confirm_phrase = actions.get(label, ("none", ""))
-
-        confirm_in = st.text_input(
-            f"Digite `{confirm_phrase}` para confirmar" if confirm_phrase else "Selecione uma aÃ§Ã£o acima",
-            value="",
-            key="danger_confirm_text",
-            disabled=not confirm_phrase,
-        )
-
-        can_run = bool(confirm_phrase) and normalize_str(confirm_in) == normalize_str(confirm_phrase)
-        if st.button("Executar reset", type="secondary", width="stretch", disabled=not can_run):
-            try:
-                if action_key == "xlsx_txns":
-                    excel_sources = (
-                        "excel_unified_debit",
-                        "excel_unified_income",
-                        "excel_unified_household",
-                        "excel_credit_card",
-                        "unified_xlsx",
-                        "manual_debit_xlsx",
-                        "manual_income_xlsx",
-                        "excel_manual",
-                    )
-                    deleted_txns = pf_db.delete_transactions_by_sources(conn, excel_sources)
-                    deleted_imports = pf_db.delete_imports_by_importers(conn, ("debit_xlsx", "income_xlsx"))
-                    st.success(f"âœ… Reset Excel: {deleted_txns} transaÃ§Ã£o(Ãµes), {deleted_imports} import(s).")
-                elif action_key == "txns":
-                    deleted_txns = pf_db.delete_all_transactions(conn)
-                    deleted_imports = pf_db.delete_all_imports(conn)
-                    st.success(f"âœ… Reset transaÃ§Ãµes: {deleted_txns} transaÃ§Ã£o(Ãµes), {deleted_imports} import(s).")
-                elif action_key == "cc_meta":
-                    deleted = pf_db.delete_all_credit_card_statements(conn)
-                    st.success(f"âœ… Reset cartÃµes: {deleted} registro(s) de fatura/meta.")
-                elif action_key == "invest":
-                    deleted_inv, deleted_monthly = pf_db.delete_all_investments(conn)
-                    st.success(f"âœ… Reset investimentos: {deleted_inv} investimento(s), {deleted_monthly} linha(s) mensal(is).")
-                elif action_key == "all":
-                    pf_db.delete_everything(conn)
-                    st.success("âœ… Reset completo concluÃ­do.")
-                else:
-                    st.info("Nada a fazer.")
-
-                st.session_state["danger_confirm_text"] = ""
-                time.sleep(0.8)
-                st.rerun()
-            except Exception as e:
-                st.error(f"âŒ Erro: {e}")
+        # Sincronização do Excel ocorre automaticamente ao enviar o arquivo atualizado.
 
     today = date.today()
-    period_expanded = nav in ("Dashboard", "TransaÃ§Ãµes")
+    period_expanded = nav in ("Dashboard", "Transações")
     
-    with st.sidebar.expander("PerÃ­odo (Dashboard/TransaÃ§Ãµes)", expanded=period_expanded):
+    with st.sidebar.expander("Período (Dashboard/Transações)", expanded=period_expanded):
         def _add_months(d: date, delta: int) -> date:
             m0 = (d.month - 1) + int(delta)
             y = d.year + (m0 // 12)
@@ -1228,7 +1121,7 @@ def main() -> None:
         mes_nomes = [
             "Janeiro",
             "Fevereiro",
-            "MarÃ§o",
+            "Março",
             "Abril",
             "Maio",
             "Junho",
@@ -1266,25 +1159,25 @@ def main() -> None:
         default_label = f"{mes_nomes[default_month.month-1]}/{default_month.year}"
         default_idx = meses_dropdown.index(default_label) if default_label in meses_dropdown else len(meses_dropdown) - 1
 
-        # Dropdown de mÃªs/ano
+        # Dropdown de mês/ano
         mes_selecionado = st.selectbox(
-            "ðŸ“… MÃªs",
+            "📅 Mês",
             meses_dropdown,
             index=default_idx,
             key="period_month"
         )
         
-        # Parsear mÃªs selecionado
+        # Parsear mês selecionado
         partes_mes = mes_selecionado.split("/")
         selected_month = mes_nomes.index(partes_mes[0]) + 1
         selected_year = int(partes_mes[1])
         
-        # Calcular datas do mÃªs
+        # Calcular datas do mês
         start = date(selected_year, selected_month, 1)
         last_day = monthrange(selected_year, selected_month)[1]
         end = date(selected_year, selected_month, last_day)
         
-        st.caption(f"PerÃ­odo: {start.strftime('%d/%m/%Y')} a {end.strftime('%d/%m/%Y')}")
+        st.caption(f"Período: {start.strftime('%d/%m/%Y')} a {end.strftime('%d/%m/%Y')}")
 
     df = pf_queries.load_transactions_df(conn, start=start, end=end)
 
@@ -1311,7 +1204,7 @@ def main() -> None:
             if existing:
                 st.success("Excel atualizado: " + " | ".join(f"`{p}`" for p in existing))
             else:
-                st.info("Nenhuma planilha de saÃ­da gerada ainda.")
+                st.info("Nenhuma planilha de saída gerada ainda.")
             
             # Open credit card Excel if requested
             if open_credit_card and include_credit_card:
@@ -1330,18 +1223,18 @@ def main() -> None:
             st.warning(f"Falha ao sincronizar Excel: {e}")
 
     if nav == "Dashboard":
-        # CabeÃ§alho do perÃ­odo
+        # Cabeçalho do período
         if start.month == end.month and start.year == end.year:
-            month_names = ["", "Janeiro", "Fevereiro", "MarÃ§o", "Abril", "Maio", "Junho",
+            month_names = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
                            "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
-            st.markdown(f"### ðŸ“Š {month_names[start.month]} de {start.year}")
+            st.markdown(f"### 📊 {month_names[start.month]} de {start.year}")
         else:
-            st.markdown(f"### ðŸ“Š {start.strftime('%d/%m/%Y')} a {end.strftime('%d/%m/%Y')}")
+            st.markdown(f"### 📊 {start.strftime('%d/%m/%Y')} a {end.strftime('%d/%m/%Y')}")
         
-        # Debug: mostrar quantas transaÃ§Ãµes foram carregadas
-        st.caption(f"ðŸ“ {len(df)} transaÃ§Ãµes carregadas do banco | PerÃ­odo: {start.strftime('%d/%m/%Y')} a {end.strftime('%d/%m/%Y')}")
+        # Debug: mostrar quantas transações foram carregadas
+        st.caption(f"📝 {len(df)} transações carregadas do banco | Período: {start.strftime('%d/%m/%Y')} a {end.strftime('%d/%m/%Y')}")
 
-        # MÃ©tricas principais
+        # Métricas principais
         income = float(df.loc[df["payment_method"] == "income", "amount"].sum()) if not df.empty else 0.0
         expense = float((-df.loc[df["amount"] < 0, "amount"].sum())) if not df.empty else 0.0
         net = income - expense
@@ -1351,22 +1244,22 @@ def main() -> None:
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             delta_income = None
-            st.metric("ðŸ’µ Receitas", _fmt_brl(income), delta=delta_income)
+            st.metric("💵 Receitas", _fmt_brl(income), delta=delta_income)
         with col2:
             budget_pct = (expense / total_budget * 100) if total_budget > 0 else 0
-            delta_expense = f"{budget_pct:.0f}% do orÃ§amento" if total_budget > 0 else None
-            st.metric("ðŸ’¸ Despesas", _fmt_brl(expense), delta=delta_expense, delta_color="inverse")
+            delta_expense = f"{budget_pct:.0f}% do orçamento" if total_budget > 0 else None
+            st.metric("💸 Despesas", _fmt_brl(expense), delta=delta_expense, delta_color="inverse")
         with col3:
             delta_color = "normal" if net >= 0 else "inverse"
-            st.metric("ðŸ“ˆ Resultado", _fmt_brl(net), delta="Positivo" if net >= 0 else "Negativo", delta_color=delta_color)
+            st.metric("📈 Resultado", _fmt_brl(net), delta="Positivo" if net >= 0 else "Negativo", delta_color=delta_color)
         with col4:
-            st.metric("ðŸ’³ CartÃµes", _fmt_brl(cc_total))
+            st.metric("💳 Cartões", _fmt_brl(cc_total))
 
         # ========================================
-        # ACERTO (sempre visÃ­vel no Dashboard)
+        # ACERTO (sempre visível no Dashboard)
         # ========================================
         df_despesas_acerto = pd.DataFrame()
-        meses_nomes = ["", "Janeiro", "Fevereiro", "MarÃ§o", "Abril", "Maio", "Junho",
+        meses_nomes = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
                        "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
 
         acerto_month = selected_month
@@ -1378,9 +1271,9 @@ def main() -> None:
             prev_acerto_month = acerto_month - 1
             prev_acerto_year = acerto_year
 
-        # CartÃµes de crÃ©dito (regra do README):
-        # - XP e Nubank Aline â†’ entram no mÃªs do acerto
-        # - Demais cartÃµes â†’ entram com a fatura do mÃªs anterior
+        # Cartões de crédito (regra do README):
+        # - XP e Nubank Aline → entram no mês do acerto
+        # - Demais cartões → entram com a fatura do mês anterior
         cartao_prev_start = date(prev_acerto_year, prev_acerto_month, 1)
         cartao_curr_end = date(acerto_year, acerto_month, monthrange(acerto_year, acerto_month)[1])
         acerto_period = (acerto_year * 12) + acerto_month
@@ -1404,7 +1297,7 @@ def main() -> None:
         else:
             df_acerto_cc = df_acerto_cc_all
 
-        # DÃ©bitos/PIX do mÃªs anterior entram no acerto do mÃªs corrente (por txn_date).
+        # Débitos/PIX do mês anterior entram no acerto do mês corrente (por txn_date).
         acerto_debito_start = date(prev_acerto_year, prev_acerto_month, 1)
         acerto_debito_end = date(prev_acerto_year, prev_acerto_month, monthrange(prev_acerto_year, prev_acerto_month)[1])
         df_acerto_deb = pf_queries.load_transactions_df_by_txn_date(conn, start=acerto_debito_start, end=acerto_debito_end)
@@ -1414,7 +1307,7 @@ def main() -> None:
             else df_acerto_deb
         )
 
-        # Contas da Casa entram no mÃªs em que foram pagas (cash_date no mÃªs do acerto).
+        # Contas da Casa entram no mês em que foram pagas (cash_date no mês do acerto).
         acerto_casa_start = date(acerto_year, acerto_month, 1)
         acerto_casa_end = date(acerto_year, acerto_month, monthrange(acerto_year, acerto_month)[1])
         df_acerto_casa = pf_queries.load_transactions_df(conn, start=acerto_casa_start, end=acerto_casa_end)
@@ -1433,23 +1326,23 @@ def main() -> None:
             df_household=df_acerto_casa,
         )
 
-        @st.dialog("ðŸ¤ Detalhes do Acerto")
+        @st.dialog("🤝 Detalhes do Acerto")
         def _show_acerto_details_dialog() -> None:
             st.caption(
-                f"MÃªs do acerto: {meses_nomes[acerto_month]}/{acerto_year} â€¢ "
-                f"DÃ©bitos/PIX: {meses_nomes[prev_acerto_month]}/{prev_acerto_year} â€¢ "
-                "Contas da Casa: pagas no mÃªs do acerto."
+                f"Mês do acerto: {meses_nomes[acerto_month]}/{acerto_year} • "
+                f"Débitos/PIX: {meses_nomes[prev_acerto_month]}/{prev_acerto_year} • "
+                "Contas da Casa: pagas no mês do acerto."
             )
             st.caption(
                 'Regras: "Gastos Renan" = 100% Renan; "Gastos Aline" = 100% Aline; demais = 50/50. '
-                'CrÃ©ditos/estornos reduzem o gasto.'
+                'Créditos/estornos reduzem o gasto.'
             )
 
             saldo = float(acerto_result.aline_deve_renan)
             if saldo >= 0:
-                direction = "Aline â†’ Renan"
+                direction = "Aline → Renan"
             else:
-                direction = "Renan â†’ Aline"
+                direction = "Renan → Aline"
 
             c1, c2, c3 = st.columns(3)
             c1.metric("Renan pagou (net)", _fmt_brl(float(acerto_result.renan_pagou_total)))
@@ -1459,10 +1352,10 @@ def main() -> None:
             st.markdown("---")
             details_df = pd.DataFrame(acerto_result.detalhes)
             if details_df.empty:
-                st.info("Sem transaÃ§Ãµes consideradas no acerto.")
+                st.info("Sem transações consideradas no acerto.")
                 return
 
-            tabs = st.tabs(["TransaÃ§Ãµes", "Por categoria"])
+            tabs = st.tabs(["Transações", "Por categoria"])
             with tabs[0]:
                 show_cols = [
                     c
@@ -1499,37 +1392,37 @@ def main() -> None:
                     return
                 by_cat = div.groupby("category")["valor"].sum().sort_values(ascending=False).reset_index()
                 by_cat.columns = ["Categoria", "Total (net)"]
-                by_cat["Cada um (Ã·2)"] = by_cat["Total (net)"] / 2
+                by_cat["Cada um (÷2)"] = by_cat["Total (net)"] / 2
                 by_cat["Total (net)"] = by_cat["Total (net)"].apply(lambda v: _fmt_brl(float(v)))
-                by_cat["Cada um (Ã·2)"] = by_cat["Cada um (Ã·2)"].apply(lambda v: _fmt_brl(float(v)))
+                by_cat["Cada um (÷2)"] = by_cat["Cada um (÷2)"].apply(lambda v: _fmt_brl(float(v)))
                 st.dataframe(by_cat, width="stretch", hide_index=True)
 
         st.markdown("---")
         col_a, col_b = st.columns([3, 1])
         with col_a:
             saldo = float(acerto_result.aline_deve_renan)
-            direction = "Aline â†’ Renan" if saldo >= 0 else "Renan â†’ Aline"
-            st.metric("ðŸ¤ Acerto do mÃªs", _fmt_brl(abs(saldo)), delta=direction, delta_color="off")
+            direction = "Aline → Renan" if saldo >= 0 else "Renan → Aline"
+            st.metric("🤝 Acerto do mês", _fmt_brl(abs(saldo)), delta=direction, delta_color="off")
         with col_b:
             if st.button("Ver detalhes", key=f"acerto_details_{acerto_year}_{acerto_month}", width="stretch"):
                 _show_acerto_details_dialog()
 
         if SHOW_ACERTO_UI:
             # ========================================
-            # ANÃLISE DO ACERTO DO MÃŠS SELECIONADO
+            # ANÁLISE DO ACERTO DO MÊS SELECIONADO
             # ========================================
             st.markdown("---")
 
-            meses_nomes = ["", "Janeiro", "Fevereiro", "MarÃ§o", "Abril", "Maio", "Junho",
+            meses_nomes = ["", "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
                            "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
 
-            st.markdown(f"### ðŸ’° Acerto de {meses_nomes[selected_month]}/{selected_year}")
+            st.markdown(f"### 💰 Acerto de {meses_nomes[selected_month]}/{selected_year}")
 
-            # O mÃªs do acerto Ã© o mÃªs selecionado pelo usuÃ¡rio
+            # O mês do acerto é o mês selecionado pelo usuário
             acerto_month = selected_month
             acerto_year = selected_year
 
-            # MÃªs anterior ao acerto (para dÃ©bitos)
+            # Mês anterior ao acerto (para débitos)
             if acerto_month == 1:
                 prev_acerto_month = 12
                 prev_acerto_year = acerto_year - 1
@@ -1537,20 +1430,20 @@ def main() -> None:
                 prev_acerto_month = acerto_month - 1
                 prev_acerto_year = acerto_year
 
-            # CartÃµes de crÃ©dito (regra do README):
-            # - XP e Nubank Aline â†’ entram no mÃªs do acerto
-            # - Demais cartÃµes â†’ entram com a fatura do mÃªs anterior
+            # Cartões de crédito (regra do README):
+            # - XP e Nubank Aline → entram no mês do acerto
+            # - Demais cartões → entram com a fatura do mês anterior
             cartao_curr_start = date(acerto_year, acerto_month, 1)
             cartao_curr_end = date(acerto_year, acerto_month, monthrange(acerto_year, acerto_month)[1])
             cartao_prev_start = date(prev_acerto_year, prev_acerto_month, 1)
             cartao_prev_end = date(prev_acerto_year, prev_acerto_month, monthrange(prev_acerto_year, prev_acerto_month)[1])
             acerto_period = (acerto_year * 12) + acerto_month
 
-            # DÃ©bitos/PIX: usamos txn_date do mÃªs anterior (padrÃ£o do acerto)
+            # Débitos/PIX: usamos txn_date do mês anterior (padrão do acerto)
             acerto_debito_start = date(prev_acerto_year, prev_acerto_month, 1)
             acerto_debito_end = date(prev_acerto_year, prev_acerto_month, monthrange(prev_acerto_year, prev_acerto_month)[1])
 
-            # Buscar faturas, dÃ©bitos e contas da casa
+            # Buscar faturas, débitos e contas da casa
             df_acerto_cc_all = pf_queries.load_transactions_df(conn, start=cartao_prev_start, end=cartao_curr_end)
             df_acerto_cc_all = (
                 df_acerto_cc_all[df_acerto_cc_all["payment_method"] == "credit_card"].copy()
@@ -1566,7 +1459,7 @@ def main() -> None:
                 due_dt = pd.to_datetime(df_acerto_cc_all[due_col], errors="coerce")
                 due_period = (due_dt.dt.year * 12) + due_dt.dt.month
                 offset = df_acerto_cc_all["account"].map(offset_by_account)
-                # Fallback para cartÃµes desconhecidos: se vencimento for atÃ© dia 10, entra no mÃªs; senÃ£o, mÃªs anterior.
+                # Fallback para cartões desconhecidos: se vencimento for até dia 10, entra no mês; senão, mês anterior.
                 fallback_offset = (due_dt.dt.day > 10).astype(int) * -1
                 offset = offset.fillna(fallback_offset)
                 expected_period = acerto_period + offset.astype(int)
@@ -1574,7 +1467,7 @@ def main() -> None:
             else:
                 df_acerto_cc = df_acerto_cc_all
 
-            # DÃ©bitos/PIX do mÃªs anterior entram no acerto do mÃªs corrente.
+            # Débitos/PIX do mês anterior entram no acerto do mês corrente.
             df_acerto_deb = pf_queries.load_transactions_df_by_txn_date(conn, start=acerto_debito_start, end=acerto_debito_end)
             df_acerto_deb = (
                 df_acerto_deb[~df_acerto_deb["payment_method"].isin(["credit_card", "household", "income"])].copy()
@@ -1582,7 +1475,7 @@ def main() -> None:
                 else df_acerto_deb
             )
 
-            # Contas da Casa entram no mÃªs em que foram pagas (cash_date = Data Pagamento).
+            # Contas da Casa entram no mês em que foram pagas (cash_date = Data Pagamento).
             acerto_casa_start = date(acerto_year, acerto_month, 1)
             acerto_casa_end = date(acerto_year, acerto_month, monthrange(acerto_year, acerto_month)[1])
             df_acerto_casa = pf_queries.load_transactions_df(conn, start=acerto_casa_start, end=acerto_casa_end)
@@ -1616,40 +1509,40 @@ def main() -> None:
                 # Cards de resumo do acerto
                 col_a1, col_a2, col_a3, col_a4 = st.columns(4)
                 with col_a1:
-                    st.metric("ðŸ“Š Total do Acerto", _fmt_brl(total_acerto),
+                    st.metric("📊 Total do Acerto", _fmt_brl(total_acerto),
                              delta=f"{meses_nomes[acerto_month]}/{acerto_year}")
                 with col_a2:
-                    st.metric("ðŸ”„ Dividir Ã·2", _fmt_brl(total_dividir),
+                    st.metric("🔄 Dividir ÷2", _fmt_brl(total_dividir),
                              delta=f"Cada um: {_fmt_brl(metade_dividir)}")
                 with col_a3:
                     if qtd_sem_cat > 0:
-                        st.metric("âš ï¸ Sem Categoria", _fmt_brl(sem_categoria),
+                        st.metric("⚠️ Sem Categoria", _fmt_brl(sem_categoria),
                                  delta=f"{qtd_sem_cat} itens pendentes", delta_color="inverse")
                     else:
-                        st.metric("âœ… Categorizado", "100%", delta="Tudo OK!")
+                        st.metric("✅ Categorizado", "100%", delta="Tudo OK!")
                 with col_a4:
-                    direction = "Aline â†’ Renan" if aline_paga >= 0 else "Renan â†’ Aline"
+                    direction = "Aline → Renan" if aline_paga >= 0 else "Renan → Aline"
                     st.metric(
-                        "ðŸ’µ Acerto",
+                        "💵 Acerto",
                         _fmt_brl(abs(aline_paga)),
                         delta=direction,
                         delta_color="off",
                     )
 
             else:
-                st.info(f"Sem transaÃ§Ãµes para o acerto de {meses_nomes[acerto_month]}/{acerto_year}")
+                st.info(f"Sem transações para o acerto de {meses_nomes[acerto_month]}/{acerto_year}")
 
-        # Faturas por CartÃ£o (Status) + DÃ©bitos
+        # Faturas por Cartão (Status) + Débitos
         st.markdown("---")
-        st.markdown("### ðŸ’³ Faturas por CartÃ£o")
+        st.markdown("### 💳 Faturas por Cartão")
         st.caption(
-            "Configure a data de **fechamento** em **Gerenciamento de CartÃµes** e marque a fatura como **paga** quando houver data de pagamento. "
-            "Clique em uma fatura (ou DÃ©bitos) para ver detalhes."
+            "Configure a data de **fechamento** em **Gerenciamento de Cartões** e marque a fatura como **paga** quando houver data de pagamento. "
+            "Clique em uma fatura (ou Débitos) para ver detalhes."
         )
 
         # Regra do README (Acerto Mensal) aplicada nos cards de fatura:
-        # - XP e Nubank Aline â†’ fatura do mÃªs selecionado
-        # - Demais cartÃµes (ex.: Nubank Renan, C6, Mercado Pago) â†’ fatura do mÃªs anterior
+        # - XP e Nubank Aline → fatura do mês selecionado
+        # - Demais cartões (ex.: Nubank Renan, C6, Mercado Pago) → fatura do mês anterior
         ref_year = start.year
         ref_month = start.month
         prev_month = ref_month - 1 if ref_month > 1 else 12
@@ -1667,7 +1560,7 @@ def main() -> None:
         )
 
         if cc_df.empty or "account" not in cc_df.columns:
-            st.info("Sem lanÃ§amentos de cartÃ£o para as faturas (regra do acerto).")
+            st.info("Sem lançamentos de cartão para as faturas (regra do acerto).")
         else:
             offset_by_account = {c.name: (0 if c.id in ("xp", "nubank_aline") else -1) for c in cards.values()}
             due_col = "statement_due_date" if "statement_due_date" in cc_df.columns else "cash_date"
@@ -1680,12 +1573,12 @@ def main() -> None:
             cc_df = cc_df[due_period == expected_period].copy()
 
             if cc_df.empty:
-                st.info("Sem faturas no mÃªs (pela regra do acerto).")
+                st.info("Sem faturas no mês (pela regra do acerto).")
             else:
                 # Dados para detalhes (faturas) e para o quadro de status.
                 cc_df = cc_df.copy()
 
-                # DÃ©bitos do mÃªs selecionado (cash impact no mÃªs)
+                # Débitos do mês selecionado (cash impact no mês)
                 if df.empty:
                     debit_exp = pd.DataFrame()
                 else:
@@ -1695,7 +1588,7 @@ def main() -> None:
                     debit_exp = debit_df[debit_df["amount"] < 0].copy() if "amount" in debit_df.columns else pd.DataFrame()
                 debit_total = abs(float(debit_exp["amount"].sum())) if not debit_exp.empty and "amount" in debit_exp.columns else 0.0
 
-                # Contas da Casa do mÃªs selecionado
+                # Contas da Casa do mês selecionado
                 if df.empty:
                     house_exp = pd.DataFrame()
                 else:
@@ -1705,10 +1598,10 @@ def main() -> None:
                     house_exp = house_df[house_df["amount"] < 0].copy() if "amount" in house_df.columns else pd.DataFrame()
                 house_total = abs(float(house_exp["amount"].sum())) if not house_exp.empty and "amount" in house_exp.columns else 0.0
 
-                @st.dialog("ðŸ¦ DÃ©bitos/PIX")
+                @st.dialog("🏦 Débitos/PIX")
                 def show_debit_detail_dialog() -> None:
                     if debit_exp.empty:
-                        st.info("Sem dÃ©bitos/PIX no perÃ­odo.")
+                        st.info("Sem débitos/PIX no período.")
                         return
                     d = debit_exp.copy()
                     d["valor"] = d["amount"].abs()
@@ -1716,7 +1609,7 @@ def main() -> None:
                     out = d[cols_show].copy().rename(
                         columns={
                             "txn_date": "Data",
-                            "description": "DescriÃ§Ã£o",
+                            "description": "Descrição",
                             "category": "Categoria",
                             "subcategory": "Subcategoria",
                             "payment_method": "Forma",
@@ -1730,10 +1623,10 @@ def main() -> None:
                     st.metric("Total", _fmt_brl(float(d["valor"].sum())))
                     st.dataframe(out, hide_index=True, width="stretch")
 
-                @st.dialog("ðŸ  Contas da Casa")
+                @st.dialog("🏠 Contas da Casa")
                 def show_house_detail_dialog() -> None:
                     if house_exp.empty:
-                        st.info("Sem contas da casa no perÃ­odo.")
+                        st.info("Sem contas da casa no período.")
                         return
                     h = house_exp.copy()
                     h["valor"] = h["amount"].abs()
@@ -1741,7 +1634,7 @@ def main() -> None:
                     out = h[cols_show].copy().rename(
                         columns={
                             "cash_date": "Data",
-                            "description": "DescriÃ§Ã£o",
+                            "description": "Descrição",
                             "category": "Categoria",
                             "subcategory": "Subcategoria",
                             "valor": "Valor",
@@ -1754,10 +1647,10 @@ def main() -> None:
                     st.metric("Total", _fmt_brl(float(h["valor"].sum())))
                     st.dataframe(out, hide_index=True, width="stretch")
 
-                @st.dialog("ðŸ§¾ Detalhes da Fatura")
+                @st.dialog("🧾 Detalhes da Fatura")
                 def show_statement_detail_dialog(account_name: str, due_date: date) -> None:
                     if cc_df.empty:
-                        st.info("Sem dados disponÃ­veis.")
+                        st.info("Sem dados disponíveis.")
                         return
                     due_col = "statement_due_date" if "statement_due_date" in cc_df.columns else "cash_date"
                     data = cc_df[
@@ -1765,21 +1658,21 @@ def main() -> None:
                         & (cc_df.get(due_col) == due_date)
                     ].copy()
                     if data.empty:
-                        st.info("Nenhuma transaÃ§Ã£o para essa fatura.")
+                        st.info("Nenhuma transação para essa fatura.")
                         return
 
-                    # "amount" no banco segue a convenÃ§Ã£o do app:
+                    # "amount" no banco segue a convenção do app:
                     # - Despesas (compras) < 0
-                    # - CrÃ©ditos/estornos > 0
-                    # Para o usuÃ¡rio, exibimos compras como positivas e estornos como negativos.
+                    # - Créditos/estornos > 0
+                    # Para o usuário, exibimos compras como positivas e estornos como negativos.
                     total = abs(float(data["amount"].sum()))
-                    st.markdown(f"### ðŸ’³ {html.escape(str(account_name))}")
+                    st.markdown(f"### 💳 {html.escape(str(account_name))}")
                     st.caption(f"Vencimento: {due_date.strftime('%d/%m/%Y')}")
                     if "txn_date" in data.columns and not data["txn_date"].isna().all():
                         min_d = data["txn_date"].min()
                         max_d = data["txn_date"].max()
                         if pd.notna(min_d) and pd.notna(max_d):
-                            st.caption(f"PerÃ­odo: {min_d.strftime('%d/%m/%Y')} â†’ {max_d.strftime('%d/%m/%Y')}")
+                            st.caption(f"Período: {min_d.strftime('%d/%m/%Y')} → {max_d.strftime('%d/%m/%Y')}")
                     st.metric("Total da Fatura", _fmt_brl(total))
                     st.markdown("---")
 
@@ -1800,7 +1693,7 @@ def main() -> None:
                     out = show[cols_show].copy().rename(
                         columns={
                             "txn_date": "Data",
-                            "description": "DescriÃ§Ã£o",
+                            "description": "Descrição",
                             "category": "Categoria",
                             "subcategory": "Subcategoria",
                             "parcelas": "Parcela",
@@ -1815,7 +1708,7 @@ def main() -> None:
 
                 def _render_statement_details(account_name: str, due_date: date) -> None:
                     if cc_df.empty:
-                        st.info("Sem dados disponÃ­veis.")
+                        st.info("Sem dados disponíveis.")
                         return
                     due_col = "statement_due_date" if "statement_due_date" in cc_df.columns else "cash_date"
                     data = cc_df[
@@ -1823,17 +1716,17 @@ def main() -> None:
                         & (cc_df.get(due_col) == due_date)
                     ].copy()
                     if data.empty:
-                        st.info("Nenhuma transaÃ§Ã£o para essa fatura.")
+                        st.info("Nenhuma transação para essa fatura.")
                         return
 
                     total = abs(float(data["amount"].sum()))
-                    st.markdown(f"### ðŸ’³ {html.escape(str(account_name))}")
+                    st.markdown(f"### 💳 {html.escape(str(account_name))}")
                     st.caption(f"Vencimento: {due_date.strftime('%d/%m/%Y')}")
                     if "txn_date" in data.columns and not data["txn_date"].isna().all():
                         min_d = data["txn_date"].min()
                         max_d = data["txn_date"].max()
                         if pd.notna(min_d) and pd.notna(max_d):
-                            st.caption(f"PerÃ­odo: {min_d.strftime('%d/%m/%Y')} â†’ {max_d.strftime('%d/%m/%Y')}")
+                            st.caption(f"Período: {min_d.strftime('%d/%m/%Y')} → {max_d.strftime('%d/%m/%Y')}")
                     st.metric("Total da Fatura", _fmt_brl(total))
                     st.markdown("---")
 
@@ -1854,7 +1747,7 @@ def main() -> None:
                     out = show[cols_show].copy().rename(
                         columns={
                             "txn_date": "Data",
-                            "description": "DescriÃ§Ã£o",
+                            "description": "Descrição",
                             "category": "Categoria",
                             "subcategory": "Subcategoria",
                             "parcelas": "Parcela",
@@ -1874,7 +1767,7 @@ def main() -> None:
                     st.info("Sem datas de vencimento para montar o quadro de status.")
                 else:
                     if "account" not in stmt_df.columns:
-                        stmt_df["account"] = "(sem cartÃ£o)"
+                        stmt_df["account"] = "(sem cartão)"
                     if "statement_closing_date" not in stmt_df.columns:
                         stmt_df["statement_closing_date"] = None
 
@@ -1893,7 +1786,7 @@ def main() -> None:
                     card_id_by_norm_name = {normalize_str(c.name): c.id for c in cards.values()}
                     
                     # Renderizar cards SEMPRE em 1 linha (cards quadrados via CSS)
-                    total_cards = 2 + int(len(grouped))  # DÃ©bitos + Contas Casa + faturas
+                    total_cards = 2 + int(len(grouped))  # Débitos + Contas Casa + faturas
                     cols = st.columns(total_cards, gap="small")
                     col_idx = 0
 
@@ -1903,19 +1796,19 @@ def main() -> None:
                         col_idx += 1
                         return col
 
-                    # Card de DÃ©bitos primeiro
+                    # Card de Débitos primeiro
                     with _next_col():
                         with st.container(border=True):
                             st.markdown(
                                 f"""
                                 <div class="stmt-card-wrapper stmt-card-wrapper">
                                   <div>
-                                    <div class="stmt-card-title">ðŸ¦ DÃ©bitos/PIX</div>
-                                    <div class="stmt-card-sub">MÃªs: {start.strftime('%m/%Y')}</div>
+                                    <div class="stmt-card-title">🏦 Débitos/PIX</div>
+                                    <div class="stmt-card-sub">Mês: {start.strftime('%m/%Y')}</div>
                                   </div>
                                   <div class="stmt-card-amount">{html.escape(_fmt_brl(debit_total))}</div>
                                   <div class="stmt-card-badges">
-                                    <span style="background:#DCFCE7;color:#166534;padding:0.15rem 0.5rem;border-radius:999px;font-size:0.7rem;font-weight:700;">âœ“ OK</span>
+                                    <span style="background:#DCFCE7;color:#166534;padding:0.15rem 0.5rem;border-radius:999px;font-size:0.7rem;font-weight:700;">✓ OK</span>
                                   </div>
                                 </div>
                                 """,
@@ -1931,8 +1824,8 @@ def main() -> None:
                                 f"""
                                 <div class="stmt-card-wrapper stmt-card-wrapper">
                                   <div>
-                                    <div class="stmt-card-title">ðŸ  Contas Casa</div>
-                                    <div class="stmt-card-sub">MÃªs: {start.strftime('%m/%Y')}</div>
+                                    <div class="stmt-card-title">🏠 Contas Casa</div>
+                                    <div class="stmt-card-sub">Mês: {start.strftime('%m/%Y')}</div>
                                   </div>
                                   <div class="stmt-card-amount">{html.escape(_fmt_brl(house_total))}</div>
                                   <div class="stmt-card-badges">
@@ -1945,9 +1838,9 @@ def main() -> None:
                             if st.button("Ver", key=f"house_details_{ref_year}_{ref_month}", width="stretch"):
                                 show_house_detail_dialog()
                     
-                    # Cards de faturas com formulÃ¡rio inline
+                    # Cards de faturas com formulário inline
                     for i, r in grouped.iterrows():
-                        account = str(r.get("account") or "").strip() or "(sem cartÃ£o)"
+                        account = str(r.get("account") or "").strip() or "(sem cartão)"
                         due_dt = _to_date(r.get("statement_due_date"))
                         if due_dt is None:
                             continue
@@ -1964,9 +1857,9 @@ def main() -> None:
                         )
 
                         # Fechamento:
-                        # 1) Se existir no meta (calendÃ¡rio), respeitar.
-                        # 2) SenÃ£o, calcular pelo config do cartÃ£o (dia fixo).
-                        # 3) Fallback: usar o que veio do banco / heurÃ­stica antiga.
+                        # 1) Se existir no meta (calendário), respeitar.
+                        # 2) Senão, calcular pelo config do cartão (dia fixo).
+                        # 3) Fallback: usar o que veio do banco / heurística antiga.
                         closing_dt = None
                         if meta:
                             meta_close = _to_date(meta.get("statement_closing_date"))
@@ -1995,17 +1888,17 @@ def main() -> None:
                         is_paid_now = bool(paid_flag and paid_dt is not None)
                         total_fatura = float(r.get("total_fatura") or 0.0)
 
-                        @st.dialog("ðŸ’³ Gerenciar Fatura")
+                        @st.dialog("💳 Gerenciar Fatura")
                         def _manage_statement_dialog(
                             account_name: str,
                             due_date: date,
                             meta_source: str,
                             closing_date: date | None,
                         ) -> None:
-                            st.caption(f"CartÃ£o: {account_name}")
+                            st.caption(f"Cartão: {account_name}")
                             st.caption(
-                                f"Venc: {due_date.strftime('%d/%m/%Y')} â€¢ "
-                                f"Fecha: {(closing_date.strftime('%d/%m/%Y') if closing_date else 'â€”')}"
+                                f"Venc: {due_date.strftime('%d/%m/%Y')} • "
+                                f"Fecha: {(closing_date.strftime('%d/%m/%Y') if closing_date else '—')}"
                             )
 
                             meta_now = pf_db.get_credit_card_statement_meta(
@@ -2014,8 +1907,8 @@ def main() -> None:
                             paid_dt_now = _to_date(meta_now.get("paid_date")) if meta_now else None
                             paid_flag_now = bool(int(meta_now.get("is_paid") or 0)) if meta_now else False
 
-                            # NÃ£o usamos `st.form` aqui porque widgets dentro de form nÃ£o atualizam
-                            # o estado (disabled/enabled) atÃ© o submit.
+                            # Não usamos `st.form` aqui porque widgets dentro de form não atualizam
+                            # o estado (disabled/enabled) até o submit.
                             base_key = f"{normalize_str(meta_source)}_{due_date.isoformat()}"
                             paid_key = f"stmt_paid_{base_key}"
                             paid_date_key = f"stmt_paid_date_{base_key}"
@@ -2068,7 +1961,7 @@ def main() -> None:
 
                         with _next_col():
                             with st.container(border=True):
-                                fech_label = closing_dt.strftime('%d/%m/%Y') if closing_dt else "â€”"
+                                fech_label = closing_dt.strftime('%d/%m/%Y') if closing_dt else "—"
                                 pay_badge = (
                                     '<span style="background:#DCFCE7;color:#166534;padding:0.15rem 0.5rem;border-radius:999px;font-size:0.7rem;font-weight:700;">Paga</span>'
                                     if is_paid_now
@@ -2104,7 +1997,7 @@ def main() -> None:
 
         
 
-        # Resumo por categoria (do mÃªs do acerto) â€” importante para ver o que estÃ¡ sendo considerado.
+        # Resumo por categoria (do mês do acerto) — importante para ver o que está sendo considerado.
         if not df_despesas_acerto.empty:
             st.markdown("#### Por Categoria (acerto)")
             cat_view = df_despesas_acerto.copy()
@@ -2125,10 +2018,10 @@ def main() -> None:
                 by_cat["Valor"] = by_cat["Valor"].apply(_fmt_brl)
                 st.dataframe(by_cat, hide_index=True, width="stretch")
 
-        # OrÃ§amento vs Realizado por Categoria (clicÃ¡vel)
+        # Orçamento vs Realizado por Categoria (clicável)
         if budgets and not df.empty:
             st.markdown("---")
-            st.markdown("### ðŸŽ¯ OrÃ§amento por Categoria")
+            st.markdown("### 🎯 Orçamento por Categoria")
             st.caption("Clique em uma categoria para ver os gastos detalhados")
             exp = df[df["amount"] < 0].copy()
             if not exp.empty:
@@ -2143,7 +2036,7 @@ def main() -> None:
                 
                 st.session_state["budget_expenses_data"] = exp
                 
-                # Mostrar em grid de 3 colunas com cards clicÃ¡veis
+                # Mostrar em grid de 3 colunas com cards clicáveis
                 budget_items = list(budgets.items())
                 cols = st.columns(3)
 
@@ -2158,13 +2051,13 @@ def main() -> None:
                         # Determinar cor baseado no percentual (farol)
                         if pct_raw >= 90:
                             dot_color = "#f5576c"
-                            status_text = "âš ï¸ AtenÃ§Ã£o"
+                            status_text = "⚠️ Atenção"
                         elif pct_raw >= 70:
                             dot_color = "#f5a623"
-                            status_text = "ðŸ”” Alerta"
+                            status_text = "🔔 Alerta"
                         else:
                             dot_color = "#38ef7d"
-                            status_text = "âœ… OK"
+                            status_text = "✅ OK"
 
                         rest_label = (
                             f"Restam {_fmt_brl(max(remaining, 0))}"
@@ -2182,7 +2075,7 @@ def main() -> None:
                                         <span class="budget-dot" style="background: {dot_color};"></span>
                                         <span>{html.escape(str(cat))}</span>
                                     </div>
-                                    <span class="budget-card-arrow">â†’</span>
+                                    <span class="budget-card-arrow">→</span>
                                 </div>
                                 <div class="budget-meta">
                                     <span style="font-size: 1.1rem; font-weight: 700;">{html.escape(_fmt_brl(spent))}</span>
@@ -2200,16 +2093,16 @@ def main() -> None:
                         """
                         st.markdown(budget_card_html, unsafe_allow_html=True)
                         
-                        # BotÃ£o invisÃ­vel sobreposto ao card
-                        if st.button("â€‹", key=f"budget_btn_{safe_cat}", width="stretch"):
+                        # Botão invisível sobreposto ao card
+                        if st.button("​", key=f"budget_btn_{safe_cat}", width="stretch"):
                             st.session_state["show_category_detail"] = cat
 
                 # Dialog para mostrar detalhes da categoria selecionada
-                @st.dialog("ðŸ“Š Detalhes da Categoria")
+                @st.dialog("📊 Detalhes da Categoria")
                 def show_category_detail_dialog(category_name: str):
                     exp_data = st.session_state.get("budget_expenses_data", pd.DataFrame())
                     if exp_data.empty:
-                        st.info("Sem dados disponÃ­veis")
+                        st.info("Sem dados disponíveis")
                         return
 
                     cat_data = exp_data[exp_data["categoria"] == category_name].copy()
@@ -2226,19 +2119,19 @@ def main() -> None:
                         st.metric("Total Gasto", _fmt_brl(total))
                     with col2:
                         if limit_val > 0:
-                            st.metric("OrÃ§amento", _fmt_brl(limit_val), delta=f"Restam {_fmt_brl(max(limit_val - total, 0))}")
+                            st.metric("Orçamento", _fmt_brl(limit_val), delta=f"Restam {_fmt_brl(max(limit_val - total, 0))}")
 
                     st.markdown("---")
-                    st.markdown("#### TransaÃ§Ãµes")
+                    st.markdown("#### Transações")
 
                     df_show_cols = [c for c in ["txn_date", "description", "subcategory", "account", "valor"] if c in cat_data.columns]
                     df_show = cat_data[df_show_cols].copy()
                     df_show = df_show.rename(
                         columns={
                             "txn_date": "Data",
-                            "description": "DescriÃ§Ã£o",
+                            "description": "Descrição",
                             "subcategory": "Subcategoria",
-                            "account": "CartÃ£o/Conta",
+                            "account": "Cartão/Conta",
                             "valor": "Valor",
                         }
                     )
@@ -2260,7 +2153,7 @@ def main() -> None:
                     show_category_detail_dialog(st.session_state["show_category_detail"])
                     st.session_state["show_category_detail"] = None
         
-        # PendÃªncias compactas
+        # Pendências compactas
         pending_cc = 0
         pending_exp = 0
         if not df.empty:
@@ -2270,9 +2163,9 @@ def main() -> None:
             pending_exp = int(((df["amount"] < 0) & ((cat_s == "") | (sub_s == ""))).sum())
 
         if pending_exp > 0:
-            st.warning(f"âš ï¸ **{pending_exp}** despesa(s) sem categoria â€” Sincronize na barra lateral")
+            st.warning(f"⚠️ **{pending_exp}** despesa(s) sem categoria — Sincronize na barra lateral")
 
-        # Card de ReembolsÃ¡veis
+        # Card de Reembolsáveis
         st.markdown("---")
         if not df.empty:
             reimb_exp = df[(df["reimbursable"] == 1) & (df["amount"] < 0)].copy()
@@ -2291,7 +2184,7 @@ def main() -> None:
             reimb_html = f"""
             <div class="reimb-card">
                 <div class="reimb-card-header">
-                    <div class="reimb-card-title">ðŸ’¸ ReembolsÃ¡veis</div>
+                    <div class="reimb-card-title">💸 Reembolsáveis</div>
                 </div>
                 <div class="reimb-metrics">
                     <div class="reimb-metric">
@@ -2313,17 +2206,17 @@ def main() -> None:
             
             # Detalhes em expander
             if not reimb_exp.empty:
-                with st.expander("ðŸ“‹ Detalhes dos reembolsÃ¡veis", expanded=False):
+                with st.expander("📋 Detalhes dos reembolsáveis", expanded=False):
                     cols_show = [c for c in ["txn_date", "description", "category", "subcategory", "amount", "reference"] if c in reimb_exp.columns]
                     show_df = reimb_exp[cols_show].copy()
                     show_df["amount"] = show_df["amount"].abs()
                     show_df = show_df.rename(columns={
                         "txn_date": "Data",
-                        "description": "DescriÃ§Ã£o",
+                        "description": "Descrição",
                         "category": "Categoria",
                         "subcategory": "Subcategoria",
                         "amount": "Valor",
-                        "reference": "ReferÃªncia",
+                        "reference": "Referência",
                     })
                     if "Valor" in show_df.columns:
                         show_df["Valor"] = show_df["Valor"].apply(_fmt_brl)
@@ -2331,23 +2224,23 @@ def main() -> None:
                         show_df = show_df.sort_values("Data", ascending=False)
                     st.dataframe(show_df, hide_index=True, width="stretch")
 
-    elif nav == "Gerenciamento de CartÃµes":
-        st.subheader("ðŸ’³ Gerenciamento de CartÃµes")
+    elif nav == "Gerenciamento de Cartões":
+        st.subheader("💳 Gerenciamento de Cartões")
         st.caption(
-            "Defina o calendÃ¡rio de **vencimento** e **fechamento** por mÃªs. "
+            "Defina o calendário de **vencimento** e **fechamento** por mês. "
             "O status **Aberta/Fechada** usa o *fechamento*; **Pendente/Paga** depende apenas do pagamento informado no card."
         )
 
         month_start = start
         month_end = end
 
-        # Montar uma linha por cartÃ£o para o mÃªs selecionado (vencimento no mÃªs).
+        # Montar uma linha por cartão para o mês selecionado (vencimento no mês).
         rows: list[dict] = []
         for c in cards.values():
             due_dt: date | None = None
             closing_dt: date | None = None
 
-            # 1) Preferir calendÃ¡rio salvo (meta) dentro do mÃªs.
+            # 1) Preferir calendário salvo (meta) dentro do mês.
             meta_in_month = conn.execute(
                 """
                 SELECT statement_due_date, statement_closing_date
@@ -2364,7 +2257,7 @@ def main() -> None:
                 due_dt = _to_date(meta_in_month["statement_due_date"])
                 closing_dt = _to_date(meta_in_month["statement_closing_date"])
 
-            # 2) SenÃ£o, tentar inferir pelo que jÃ¡ existe no banco (transaÃ§Ãµes do mÃªs).
+            # 2) Senão, tentar inferir pelo que já existe no banco (transações do mês).
             if due_dt is None:
                 txn_due = conn.execute(
                     """
@@ -2387,14 +2280,14 @@ def main() -> None:
             if due_dt is None:
                 due_dt = clamp_day(month_start.year, month_start.month, int(c.due_day))
 
-            # Fechamento default pelo config do cartÃ£o (pode ser sobrescrito no editor)
+            # Fechamento default pelo config do cartão (pode ser sobrescrito no editor)
             if closing_dt is None and due_dt is not None:
                 closing_dt = _default_statement_closing_date(due_dt, closing_day=int(c.closing_day))
 
             rows.append(
                 {
                     "id": str(c.id),
-                    "CartÃ£o": str(c.name),
+                    "Cartão": str(c.name),
                     "Vencimento": due_dt,
                     "Fechamento": closing_dt,
                 }
@@ -2406,14 +2299,14 @@ def main() -> None:
             sched_df,
             hide_index=True,
             width="stretch",
-            disabled=["CartÃ£o"],
+            disabled=["Cartão"],
             column_config={
-                "Vencimento": st.column_config.DateColumn("Vencimento", help="Data de vencimento da fatura (mÃªs selecionado)."),
-                "Fechamento": st.column_config.DateColumn("Fechamento", help="Data de fechamento da fatura (pode ser no mÃªs anterior)."),
+                "Vencimento": st.column_config.DateColumn("Vencimento", help="Data de vencimento da fatura (mês selecionado)."),
+                "Fechamento": st.column_config.DateColumn("Fechamento", help="Data de fechamento da fatura (pode ser no mês anterior)."),
             },
         )
 
-        if st.button("Salvar calendÃ¡rio do mÃªs", type="primary", width="stretch"):
+        if st.button("Salvar calendário do mês", type="primary", width="stretch"):
             updated = 0
             for card_id, r in edited.iterrows():
                 due_dt = r.get("Vencimento")
@@ -2439,11 +2332,11 @@ def main() -> None:
                 )
                 updated += 1
 
-            st.success(f"âœ… CalendÃ¡rio atualizado ({updated} cartÃ£o(Ãµes)).")
+            st.success(f"✅ Calendário atualizado ({updated} cartão(ões)).")
             st.rerun()
 
     elif nav == "Investimentos":
-        st.subheader("ðŸ“ˆ Investimentos")
+        st.subheader("📈 Investimentos")
 
         # Carrega dados dos investimentos
         monthly_all = pf_db.load_investment_monthly_df(
@@ -2492,9 +2385,9 @@ def main() -> None:
 
         c1, c2 = st.columns([1, 1])
         with c1:
-            start_month_dt = st.date_input("InÃ­cio (mÃªs)", value=date(2025, 2, 1), key="inv_start_month")
+            start_month_dt = st.date_input("Início (mês)", value=date(2025, 2, 1), key="inv_start_month")
         with c2:
-            end_month_dt = st.date_input("Fim (mÃªs)", value=date(today.year, today.month, 1), key="inv_end_month")
+            end_month_dt = st.date_input("Fim (mês)", value=date(today.year, today.month, 1), key="inv_end_month")
 
         start_ym = (int(start_month_dt.year), int(start_month_dt.month))
         end_ym = (int(end_month_dt.year), int(end_month_dt.month))
@@ -2505,7 +2398,7 @@ def main() -> None:
         month_labels = [f"{pt_months[m-1]}/{y}" for (y, m) in months]
         month_label_by_ym = {ym: lab for ym, lab in zip(months, month_labels, strict=True)}
 
-        # InventÃ¡rio (investments)
+        # Inventário (investments)
         inv_map: dict[int, dict[str, object]] = {}
         if not inv_df.empty:
             for _, inv in inv_df.iterrows():
@@ -2527,7 +2420,7 @@ def main() -> None:
                 row[lab] = None
             inv_rows.append(row)
 
-        # Preenche valores mensais (balance) no perÃ­odo selecionado
+        # Preenche valores mensais (balance) no período selecionado
         if not monthly_all.empty:
             period_min = start_ym[0] * 12 + start_ym[1]
             period_max = end_ym[0] * 12 + end_ym[1]
@@ -2554,7 +2447,7 @@ def main() -> None:
 
         matrix_df = pd.DataFrame(inv_rows) if inv_rows else pd.DataFrame(columns=["ID", "Banco", "Nome", "Vencimento", *month_labels])
 
-        # Totais por mÃªs (para visualizar rÃ¡pido, como no print)
+        # Totais por mês (para visualizar rápido, como no print)
         totals_row = {"Banco": "", "Nome": "Saldo Total", "Vencimento": None}
         for lab in month_labels:
             try:
@@ -2562,8 +2455,8 @@ def main() -> None:
             except Exception:  # noqa: BLE001
                 totals_row[lab] = 0.0
 
-        # rendimento mensal (delta do total mÃªs a mÃªs)
-        perf_row = {"Banco": "", "Nome": "Rendimento (Î”)", "Vencimento": None}
+        # rendimento mensal (delta do total mês a mês)
+        perf_row = {"Banco": "", "Nome": "Rendimento (Δ)", "Vencimento": None}
         prev_total = None
         for (y, m), lab in zip(months, month_labels, strict=True):
             total = float(totals_row.get(lab) or 0.0)
@@ -2579,7 +2472,7 @@ def main() -> None:
         col_cfg: dict[str, object] = {
             "ID": st.column_config.NumberColumn("ID", disabled=True),
             "Banco": st.column_config.SelectboxColumn("Banco", options=allowed_banks, required=True),
-            "Nome": st.column_config.TextColumn("Nome", required=True, help="Ex.: CDB Liq DiÃ¡ria, LCI, Tesouro..."),
+            "Nome": st.column_config.TextColumn("Nome", required=True, help="Ex.: CDB Liq Diária, LCI, Tesouro..."),
             "Vencimento": st.column_config.DateColumn("Vencimento", format="DD/MM/YYYY"),
         }
         for lab in month_labels:
@@ -2594,7 +2487,7 @@ def main() -> None:
             key="inv_matrix",
         )
 
-        if st.button("ðŸ’¾ Salvar tabela", type="primary"):
+        if st.button("💾 Salvar tabela", type="primary"):
             updated_cells = 0
             for _, row in edited_matrix.iterrows():
                 inv_id_raw = row.get("ID")
@@ -2621,7 +2514,7 @@ def main() -> None:
                 for (y, m) in months:
                     lab = month_label_by_ym[(y, m)]
                     v = row.get(lab)
-                    # vazio -> remove (mantÃ©m a matriz consistente)
+                    # vazio -> remove (mantém a matriz consistente)
                     if v is None or (isinstance(v, float) and pd.isna(v)):
                         conn.execute(
                             "DELETE FROM investment_monthly WHERE investment_id = ? AND year = ? AND month = ?",
@@ -2645,16 +2538,16 @@ def main() -> None:
                     updated_cells += 1
 
             conn.commit()
-            st.success(f"âœ… Salvo ({updated_cells} cÃ©lula(s) atualizada(s)).")
+            st.success(f"✅ Salvo ({updated_cells} célula(s) atualizada(s)).")
             st.rerun()
         
-        # GrÃ¡fico de evoluÃ§Ã£o
+        # Gráfico de evolução
         st.markdown("---")
-        st.markdown("### ðŸ“Š EvoluÃ§Ã£o Mensal")
+        st.markdown("### 📊 Evolução Mensal")
 
-        # usa a prÃ³pria matriz para montar o chart (no perÃ­odo selecionado)
+        # usa a própria matriz para montar o chart (no período selecionado)
         if edited_matrix.empty if "edited_matrix" in locals() else matrix_df.empty:
-            st.info("Adicione investimentos para visualizar o grÃ¡fico de evoluÃ§Ã£o.")
+            st.info("Adicione investimentos para visualizar o gráfico de evolução.")
         else:
             chart_data = []
             base = edited_matrix if "edited_matrix" in locals() else matrix_df
@@ -2687,14 +2580,14 @@ def main() -> None:
                     .encode(
                         x=alt.X(
                             "MesLabel:O",
-                            title="MÃªs",
+                            title="Mês",
                             sort=alt.SortField(field="Mes", order="ascending"),
                             axis=alt.Axis(labelAngle=0, labelOverlap="greedy"),
                         ),
                         y=alt.Y("sum(Valor):Q", title="Total (R$)"),
                         color=alt.Color("Nome:N", title="Ativo"),
                         tooltip=[
-                            alt.Tooltip("MesLabel:O", title="MÃªs"),
+                            alt.Tooltip("MesLabel:O", title="Mês"),
                             alt.Tooltip("Nome:N", title="Ativo"),
                             alt.Tooltip("sum(Valor):Q", title="Valor", format=",.2f"),
                         ],
@@ -2708,7 +2601,7 @@ def main() -> None:
                         x=alt.X("MesLabel:O", sort=alt.SortField(field="Mes", order="ascending")),
                         y=alt.Y("Total:Q"),
                         tooltip=[
-                            alt.Tooltip("MesLabel:O", title="MÃªs"),
+                            alt.Tooltip("MesLabel:O", title="Mês"),
                             alt.Tooltip("Total:Q", title="Total", format=",.2f"),
                         ],
                     )
@@ -2716,13 +2609,13 @@ def main() -> None:
 
                 st.altair_chart((bars + total_line).properties(height=420), use_container_width=True)
     elif nav == "Acerto Mensal":
-        st.subheader("ðŸ’° Acerto Mensal com Aline")
+        st.subheader("💰 Acerto Mensal com Aline")
         
-        # Meses para seleÃ§Ã£o amigÃ¡vel
-        meses_nomes = ["Janeiro", "Fevereiro", "MarÃ§o", "Abril", "Maio", "Junho", 
+        # Meses para seleção amigável
+        meses_nomes = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", 
                        "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
         
-        # Gerar opÃ§Ãµes de meses recentes (Ãºltimos 6 meses)
+        # Gerar opções de meses recentes (últimos 6 meses)
         opcoes_acerto = []
         for i in range(6):
             m = today.month - i
@@ -2733,43 +2626,43 @@ def main() -> None:
             opcoes_acerto.append(f"{meses_nomes[m-1]} {y}")
         
         acerto_selecionado = st.selectbox(
-            "ðŸ“… Selecione o mÃªs do acerto",
+            "📅 Selecione o mês do acerto",
             opcoes_acerto,
             index=0,
-            help="MÃªs em que vocÃª faz o acerto (inÃ­cio do mÃªs)"
+            help="Mês em que você faz o acerto (início do mês)"
         )
         
-        # Parsear seleÃ§Ã£o
+        # Parsear seleção
         partes = acerto_selecionado.split()
         ref_month = meses_nomes.index(partes[0]) + 1
         ref_year = int(partes[1])
         
-        # MÃªs anterior (para dÃ©bitos e faturas 2Âª quinzena)
+        # Mês anterior (para débitos e faturas 2ª quinzena)
         prev_month = ref_month - 1 if ref_month > 1 else 12
         prev_year = ref_year if ref_month > 1 else ref_year - 1
         
         st.caption(f"""
         **O que entra no acerto de {meses_nomes[ref_month-1]}:**
-        - ðŸ’³ CartÃµes com vencimento **atÃ© dia 10** entram no mÃªs do acerto (ex: XP 05, Nubank Aline 05)
-        - ðŸ’³ CartÃµes com vencimento **apÃ³s dia 10** entram com a fatura do mÃªs anterior (ex: Nubank 19, C6 20, Mercado Pago 17)
-        - ðŸ’µ DÃ©bitos/PIX de **{meses_nomes[prev_month-1]}**
-        - ðŸ  **Contas da Casa pagas em {meses_nomes[ref_month-1]}** (podem ter \"MÃªs ReferÃªncia\" do mÃªs anterior)
+        - 💳 Cartões com vencimento **até dia 10** entram no mês do acerto (ex: XP 05, Nubank Aline 05)
+        - 💳 Cartões com vencimento **após dia 10** entram com a fatura do mês anterior (ex: Nubank 19, C6 20, Mercado Pago 17)
+        - 💵 Débitos/PIX de **{meses_nomes[prev_month-1]}**
+        - 🏠 **Contas da Casa pagas em {meses_nomes[ref_month-1]}** (podem ter \"Mês Referência\" do mês anterior)
         """)
         
-        # PerÃ­odo de faturas definido por cartÃ£o (regra fixa):
-        # - XP e Nubank Aline â†’ mÃªs do acerto
-        # - Demais cartÃµes â†’ mÃªs anterior
+        # Período de faturas definido por cartão (regra fixa):
+        # - XP e Nubank Aline → mês do acerto
+        # - Demais cartões → mês anterior
         cartao_prev_start = date(prev_year, prev_month, 1)
         cartao_prev_end = date(prev_year, prev_month, monthrange(prev_year, prev_month)[1])
         cartao_curr_start = date(ref_year, ref_month, 1)
         cartao_curr_end = date(ref_year, ref_month, monthrange(ref_year, ref_month)[1])
         acerto_period = (ref_year * 12) + ref_month
         
-        # PerÃ­odo para dÃ©bitos: mÃªs anterior inteiro
+        # Período para débitos: mês anterior inteiro
         debito_start = date(prev_year, prev_month, 1)
         debito_end = date(prev_year, prev_month, monthrange(prev_year, prev_month)[1])
         
-        # Buscar faturas de cartÃ£o (cash_date = vencimento)
+        # Buscar faturas de cartão (cash_date = vencimento)
         df_cartoes_all = pf_queries.load_transactions_df(conn, start=cartao_prev_start, end=cartao_curr_end)
         df_cartoes_all = (
             df_cartoes_all[df_cartoes_all["payment_method"] == "credit_card"].copy()
@@ -2792,23 +2685,23 @@ def main() -> None:
         else:
             df_cartoes = df_cartoes_all
         
-        # Buscar dÃ©bitos do mÃªs anterior por data da transaÃ§Ã£o (txn_date)
+        # Buscar débitos do mês anterior por data da transação (txn_date)
         df_debitos = pf_queries.load_transactions_df_by_txn_date(conn, start=debito_start, end=debito_end)
         df_debitos = df_debitos[~df_debitos["payment_method"].isin(["credit_card", "household", "income"])].copy() if not df_debitos.empty else df_debitos
         
-        # Buscar contas da casa do mÃªs CORRENTE (nÃ£o do anterior!)
+        # Buscar contas da casa do mês CORRENTE (não do anterior!)
         casa_start = date(ref_year, ref_month, 1)
         casa_end = date(ref_year, ref_month, monthrange(ref_year, ref_month)[1])
         df_casa = pf_queries.load_transactions_df(conn, start=casa_start, end=casa_end)
         df_casa = df_casa[df_casa["payment_method"] == "household"].copy() if not df_casa.empty else df_casa
         
-        # Combinar cartÃµes e dÃ©bitos
+        # Combinar cartões e débitos
         df_acerto = pd.concat([df_cartoes, df_debitos], ignore_index=True)
         
         if df_acerto.empty and df_casa.empty:
-            st.info("Sem transaÃ§Ãµes no perÃ­odo selecionado.")
+            st.info("Sem transações no período selecionado.")
         else:
-            # Usar o mÃ³dulo de reconciliaÃ§Ã£o
+            # Usar o módulo de reconciliação
             result = pf_recon.calculate_reconciliation(
                 df_acerto,
                 reference_month=ref_month,
@@ -2820,62 +2713,62 @@ def main() -> None:
             
             # Resumo visual
             st.markdown("---")
-            st.markdown(f"### ðŸ“Š Resumo do Acerto de {meses_nomes[ref_month-1]}/{ref_year}")
+            st.markdown(f"### 📊 Resumo do Acerto de {meses_nomes[ref_month-1]}/{ref_year}")
             
             col1, col2, col3, col4 = st.columns(4)
             with col1:
-                st.metric("ðŸ’¸ Total Despesas", f"R$ {result.total_despesas:,.2f}")
+                st.metric("💸 Total Despesas", f"R$ {result.total_despesas:,.2f}")
             with col2:
-                st.metric("ðŸ”„ Dividir (Ã·2)", f"R$ {result.total_dividir:,.2f}")
+                st.metric("🔄 Dividir (÷2)", f"R$ {result.total_dividir:,.2f}")
             with col3:
-                st.metric("ðŸ  Contas Casa", f"R$ {result.total_contas_casa:,.2f}")
+                st.metric("🏠 Contas Casa", f"R$ {result.total_contas_casa:,.2f}")
             with col4:
                 if result.qtd_sem_categoria > 0:
-                    st.metric("âš ï¸ Sem Categoria", f"R$ {result.sem_categoria:,.2f}", delta=f"{result.qtd_sem_categoria} itens", delta_color="inverse")
+                    st.metric("⚠️ Sem Categoria", f"R$ {result.sem_categoria:,.2f}", delta=f"{result.qtd_sem_categoria} itens", delta_color="inverse")
                 else:
-                    st.metric("âœ… Categorizado", "OK")
+                    st.metric("✅ Categorizado", "OK")
             
             st.markdown("---")
-            st.markdown("### ðŸ‘¤ Gastos Individuais (nÃ£o dividem)")
+            st.markdown("### 👤 Gastos Individuais (não dividem)")
             col_r, col_a = st.columns(2)
             with col_r:
-                st.metric("ðŸ§” Renan", f"R$ {result.total_renan_individual:,.2f}")
+                st.metric("🧔 Renan", f"R$ {result.total_renan_individual:,.2f}")
             with col_a:
-                st.metric("ðŸ‘© Aline", f"R$ {result.total_aline_individual:,.2f}")
+                st.metric("👩 Aline", f"R$ {result.total_aline_individual:,.2f}")
             
-            # Quem pagou o quÃª
+            # Quem pagou o quê
             st.markdown("---")
-            st.markdown("### ðŸ’³ Quem Pagou")
+            st.markdown("### 💳 Quem Pagou")
             col_p1, col_p2, col_p3 = st.columns(3)
             with col_p1:
                 st.markdown(f"""
                 <div style="background: #667eea; padding: 1rem; border-radius: 10px; color: white; text-align: center;">
-                    <div style="font-size: 0.9rem;">ðŸ§” Renan pagou</div>
+                    <div style="font-size: 0.9rem;">🧔 Renan pagou</div>
                     <div style="font-size: 1.2rem; font-weight: bold;">R$ {result.renan_pagou_dividir + result.renan_pagou_casa:,.2f}</div>
-                    <div style="font-size: 0.8rem; opacity: 0.9;">DividÃ­veis: R$ {result.renan_pagou_dividir:,.2f}</div>
+                    <div style="font-size: 0.8rem; opacity: 0.9;">Dividíveis: R$ {result.renan_pagou_dividir:,.2f}</div>
                     <div style="font-size: 0.8rem; opacity: 0.9;">Casa: R$ {result.renan_pagou_casa:,.2f}</div>
                 </div>
                 """, unsafe_allow_html=True)
             with col_p2:
                 st.markdown(f"""
                 <div style="background: #f093fb; padding: 1rem; border-radius: 10px; color: white; text-align: center;">
-                    <div style="font-size: 0.9rem;">ðŸ‘© Aline pagou</div>
+                    <div style="font-size: 0.9rem;">👩 Aline pagou</div>
                     <div style="font-size: 1.2rem; font-weight: bold;">R$ {result.aline_pagou_dividir + result.aline_pagou_casa:,.2f}</div>
-                    <div style="font-size: 0.8rem; opacity: 0.9;">DividÃ­veis: R$ {result.aline_pagou_dividir:,.2f}</div>
+                    <div style="font-size: 0.8rem; opacity: 0.9;">Dividíveis: R$ {result.aline_pagou_dividir:,.2f}</div>
                     <div style="font-size: 0.8rem; opacity: 0.9;">Casa: R$ {result.aline_pagou_casa:,.2f}</div>
                 </div>
                 """, unsafe_allow_html=True)
             with col_p3:
                 st.markdown(f"""
                 <div style="background: #38ef7d; padding: 1rem; border-radius: 10px; color: white; text-align: center;">
-                    <div style="font-size: 0.9rem;">ðŸ‘¨â€ðŸ‘©â€ðŸ‘¦ Conta FamÃ­lia</div>
+                    <div style="font-size: 0.9rem;">👨‍👩‍👦 Conta Família</div>
                     <div style="font-size: 1.2rem; font-weight: bold;">R$ {result.familia_pagou_dividir:,.2f}</div>
                     <div style="font-size: 0.8rem; opacity: 0.9;">(considerado 50/50)</div>
                 </div>
                 """, unsafe_allow_html=True)
             
             st.markdown("---")
-            st.markdown("### ðŸ’µ Valor do Acerto")
+            st.markdown("### 💵 Valor do Acerto")
             
             saldo_acerto = float(result.aline_deve_renan)
             if saldo_acerto > 0:
@@ -2897,13 +2790,13 @@ def main() -> None:
                 </div>
                 """, unsafe_allow_html=True)
             else:
-                st.success("ðŸŽ‰ Saldo zerado! NinguÃ©m deve nada.")
+                st.success("🎉 Saldo zerado! Ninguém deve nada.")
 
             st.markdown("---")
-            st.markdown("### ðŸ§¾ TransaÃ§Ãµes consideradas no acerto")
+            st.markdown("### 🧾 Transações consideradas no acerto")
             with st.expander("Ver lista completa", expanded=False):
                 if details_df.empty:
-                    st.info("Sem transaÃ§Ãµes consideradas.")
+                    st.info("Sem transações consideradas.")
                 else:
                     show_cols = [
                         c
@@ -2930,10 +2823,10 @@ def main() -> None:
                             show[col] = show[col].apply(lambda v: _fmt_brl(float(v)))
                     st.dataframe(show, width="stretch", hide_index=True)
             
-            # Faturas por cartÃ£o
+            # Faturas por cartão
             if result.por_cartao:
                 st.markdown("---")
-                st.markdown("### ðŸ’³ Faturas por CartÃ£o")
+                st.markdown("### 💳 Faturas por Cartão")
                 
                 # Gradientes para variar os cards
                 card_gradients = [
@@ -2950,7 +2843,7 @@ def main() -> None:
                     gradient = card_gradients[idx % len(card_gradients)]
                     cards_html.append(f'<div class="cc-card" style="background: {gradient};">')
                     cards_html.append('<div class="cc-card-title">')
-                    cards_html.append(f"<span>ðŸ’³ {html.escape(str(card_name or 'Sem cartÃ£o'))}</span>")
+                    cards_html.append(f"<span>💳 {html.escape(str(card_name or 'Sem cartão'))}</span>")
                     cards_html.append("</div>")
                     cards_html.append(f'<div class="cc-card-value">{html.escape(_fmt_brl(float(card_total)))}</div>')
                     cards_html.append("</div>")
@@ -2960,20 +2853,20 @@ def main() -> None:
             # Contas da casa (se houver)
             if not df_casa.empty:
                 st.markdown("---")
-                st.markdown(f"### ðŸ  Contas da Casa de {meses_nomes[ref_month-1]}")
+                st.markdown(f"### 🏠 Contas da Casa de {meses_nomes[ref_month-1]}")
                 df_casa_display = df_casa[df_casa["amount"] < 0].copy()
                 if not df_casa_display.empty:
                     df_casa_display["valor"] = df_casa_display["amount"].abs()
                     df_casa_display = df_casa_display[["txn_date", "subcategory", "description", "valor", "person"]].copy()
-                    df_casa_display.columns = ["Data", "Tipo", "DescriÃ§Ã£o", "Valor", "Quem Pagou"]
+                    df_casa_display.columns = ["Data", "Tipo", "Descrição", "Valor", "Quem Pagou"]
                     df_casa_display["Valor"] = df_casa_display["Valor"].apply(lambda x: f"R$ {x:,.2f}")
                     st.dataframe(df_casa_display, width="stretch", hide_index=True)
             
             # Detalhamento por categoria (para dividir)
             st.markdown("---")
-            st.markdown("### ðŸ“‚ Gastos para Dividir (por Categoria)")
+            st.markdown("### 📂 Gastos para Dividir (por Categoria)")
             if details_df.empty:
-                st.info("Sem transaÃ§Ãµes no acerto.")
+                st.info("Sem transações no acerto.")
             else:
                 df_dividir = details_df[details_df["regra"] == "Dividir (50/50)"].copy() if "regra" in details_df.columns else details_df.iloc[0:0].copy()
                 if not df_dividir.empty:
@@ -2985,15 +2878,15 @@ def main() -> None:
                 else:
                     by_cat = df_dividir.groupby("category")["valor"].sum().sort_values(ascending=False).reset_index()
                     by_cat.columns = ["Categoria", "Total (net)"]
-                    by_cat["Cada um paga (Ã·2)"] = by_cat["Total (net)"] / 2
+                    by_cat["Cada um paga (÷2)"] = by_cat["Total (net)"] / 2
                     by_cat["Total (net)"] = by_cat["Total (net)"].apply(lambda v: _fmt_brl(float(v)))
-                    by_cat["Cada um paga (Ã·2)"] = by_cat["Cada um paga (Ã·2)"].apply(lambda v: _fmt_brl(float(v)))
+                    by_cat["Cada um paga (÷2)"] = by_cat["Cada um paga (÷2)"].apply(lambda v: _fmt_brl(float(v)))
                     st.dataframe(by_cat, width="stretch", hide_index=True)
             
             # Lista de itens sem categoria
             if result.qtd_sem_categoria > 0:
                 st.markdown("---")
-                st.warning(f"âš ï¸ **{result.qtd_sem_categoria} transaÃ§Ãµes sem categoria** - Categorize antes de finalizar o acerto!")
+                st.warning(f"⚠️ **{result.qtd_sem_categoria} transações sem categoria** - Categorize antes de finalizar o acerto!")
                 with st.expander("Ver itens sem categoria"):
                     if details_df.empty:
                         st.info("Sem itens.")
@@ -3013,7 +2906,7 @@ def main() -> None:
                             show = df_sem[show_cols].copy().rename(
                                 columns={
                                     "txn_date": "Data",
-                                    "description": "DescriÃ§Ã£o",
+                                    "description": "Descrição",
                                     "valor": "Valor",
                                     "source_file": "Origem",
                                 }
@@ -3024,9 +2917,9 @@ def main() -> None:
                                 show = show.sort_values("Data", ascending=False)
                             st.dataframe(show, width="stretch", hide_index=True)
             
-            # BotÃ£o de exportar para Excel
+            # Botão de exportar para Excel
             st.markdown("---")
-            st.markdown("### ðŸ“¥ Exportar Acerto")
+            st.markdown("### 📥 Exportar Acerto")
             
             # Preparar dados para export
             df_export = details_df.copy() if not details_df.empty else pd.DataFrame()
@@ -3057,8 +2950,8 @@ def main() -> None:
                         "txn_date": "Data",
                         "cash_date": "Impacto",
                         "payment_method": "Forma",
-                        "account": "CartÃ£o/Conta",
-                        "description": "DescriÃ§Ã£o",
+                        "account": "Cartão/Conta",
+                        "description": "Descrição",
                         "category": "Categoria",
                         "subcategory": "Subcategoria",
                         "valor": "Valor (net)",
@@ -3074,30 +2967,30 @@ def main() -> None:
                 def _divide_label(regra: Any) -> str:
                     s = str(regra or "")
                     if s.startswith("Gastos Renan"):
-                        return "NÃƒO (Renan)"
+                        return "NÃO (Renan)"
                     if s.startswith("Gastos Aline"):
-                        return "NÃƒO (Aline)"
+                        return "NÃO (Aline)"
                     return "SIM"
 
                 if "Regra" in df_export.columns:
                     df_export["Divide?"] = df_export["Regra"].apply(_divide_label)
                 df_export = df_export.sort_values([c for c in ["Origem", "Data"] if c in df_export.columns])
             
-            # Gerar Excel em memÃ³ria
+            # Gerar Excel em memória
             from io import BytesIO
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                # Aba com todas as transaÃ§Ãµes
+                # Aba com todas as transações
                 if not df_export.empty:
-                    df_export.to_excel(writer, sheet_name='TransaÃ§Ãµes', index=False)
+                    df_export.to_excel(writer, sheet_name='Transações', index=False)
                 
                 # Aba com contas da casa
                 if not df_casa.empty:
                     df_casa_exp = df_casa[df_casa["amount"] < 0][["txn_date", "subcategory", "description", "amount", "person"]].copy()
-                    df_casa_exp.columns = ["Data", "Tipo", "DescriÃ§Ã£o", "Valor", "Quem Pagou"]
+                    df_casa_exp.columns = ["Data", "Tipo", "Descrição", "Valor", "Quem Pagou"]
                     df_casa_exp["Valor"] = df_casa_exp["Valor"].abs()
                     df_casa_exp.to_excel(writer, sheet_name='Contas da Casa', index=False)
-                df_export.to_excel(writer, sheet_name='TransaÃ§Ãµes', index=False)
+                df_export.to_excel(writer, sheet_name='Transações', index=False)
                 
                 # Aba com resumo
                 resumo_data = {
@@ -3108,9 +3001,9 @@ def main() -> None:
                         "Gastos Individuais Renan",
                         "Gastos Individuais Aline",
                         "",
-                        "Renan pagou (dividÃ­veis)",
-                        "Aline pagou (dividÃ­veis)",
-                        "FamÃ­lia pagou (dividÃ­veis)",
+                        "Renan pagou (dividíveis)",
+                        "Aline pagou (dividíveis)",
+                        "Família pagou (dividíveis)",
                         "Renan pagou (casa)",
                         "Aline pagou (casa)",
                         "",
@@ -3143,13 +3036,13 @@ def main() -> None:
                     if not df_div.empty:
                         by_cat_export = df_div.groupby("category")["valor"].sum().sort_values(ascending=False).reset_index()
                         by_cat_export.columns = ["Categoria", "Total (net)"]
-                        by_cat_export["Cada um paga (Ã·2)"] = by_cat_export["Total (net)"] / 2
+                        by_cat_export["Cada um paga (÷2)"] = by_cat_export["Total (net)"] / 2
                         by_cat_export.to_excel(writer, sheet_name='Por Categoria', index=False)
             
             excel_data = output.getvalue()
             
             st.download_button(
-                "ðŸ“¥ Baixar Excel do Acerto",
+                "📥 Baixar Excel do Acerto",
                 data=excel_data,
                 file_name=f"acerto_{meses_nomes[ref_month-1].lower()}_{ref_year}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -3331,12 +3224,87 @@ def main() -> None:
             cols = [c for c in cols if c in df_recent.columns]
             show = df_recent.sort_values(["id"], ascending=[False]).head(20)[cols]
             st.dataframe(_display_df_ptbr(show), width="stretch", hide_index=True)
+
+        st.divider()
+        st.caption("Categorizacao de cartao (hierarquica) - salva no Excel e no banco")
+        df_edit_src = pf_queries.load_transactions_df(conn, start=start, end=end)
+        if df_edit_src.empty:
+            st.info("Sem transacoes no periodo.")
+        else:
+            df_cc = df_edit_src[df_edit_src["payment_method"] == "credit_card"].copy()
+            if df_cc.empty:
+                st.info("Sem transacoes de cartao no periodo.")
+            else:
+                if "id" in df_cc.columns:
+                    df_cc = df_cc.sort_values("id", ascending=False)
+                df_cc = df_cc.head(200).reset_index(drop=True)
+
+                expense_cats, expense_sub_map = _expense_categories(expense_categories_tree)
+                preview = df_cc[["txn_date", "account", "description", "amount", "category", "subcategory"]].copy()
+                preview["category"] = preview["category"].fillna("").astype(str)
+                preview["subcategory"] = preview["subcategory"].fillna("").astype(str)
+                st.dataframe(_display_df_ptbr(preview), width="stretch", hide_index=True)
+
+                def _tx_label(i: int) -> str:
+                    r = df_cc.iloc[i]
+                    dt = _to_date(r.get("txn_date"))
+                    dt_s = dt.isoformat() if dt else str(r.get("txn_date") or "")
+                    acc = str(r.get("account") or "").strip()
+                    desc = str(r.get("description") or "").strip()
+                    amt = float(r.get("amount") or 0.0)
+                    return f"{dt_s} | {acc} | {desc[:80]} | {_fmt_brl(abs(amt))}"
+
+                idx = st.selectbox(
+                    "Transacao para categorizar",
+                    options=list(range(len(df_cc))),
+                    format_func=_tx_label,
+                    key="tx_cc_pick_idx",
+                )
+                row = df_cc.iloc[int(idx)]
+                row_hash = str(row.get("row_hash") or "").strip()
+                cur_cat = str(row.get("category") or "").strip()
+                cur_sub = str(row.get("subcategory") or "").strip()
+                cur_reemb = bool(int(row.get("reimbursable") or 0) == 1)
+
+                cat_options = [""] + expense_cats
+                cat_idx = cat_options.index(cur_cat) if cur_cat in cat_options else 0
+                selected_cat = st.selectbox("Categoria", cat_options, index=cat_idx, key=f"tx_cat_{row_hash}")
+
+                sub_options = [""] + expense_sub_map.get(selected_cat, [])
+                sub_idx = sub_options.index(cur_sub) if cur_sub in sub_options else 0
+                selected_sub = st.selectbox("Subcategoria", sub_options, index=sub_idx, key=f"tx_sub_{row_hash}")
+
+                selected_reemb = st.checkbox("Reembolsavel", value=cur_reemb, key=f"tx_reemb_{row_hash}")
+
+                if (selected_cat, selected_sub, selected_reemb) != (cur_cat, cur_sub, cur_reemb):
+                    try:
+                        updates = [
+                            {
+                                "row_hash": row_hash,
+                                "category": selected_cat or None,
+                                "subcategory": selected_sub or None,
+                                "reimbursable": selected_reemb,
+                            }
+                        ]
+                        updated_db, missing_db = pf_db.bulk_update_categories_by_row_hash(
+                            conn, updates, allow_clear=True
+                        )
+                        updated_xlsx, missing_xlsx = pf_excel_unified.update_credit_card_categories(
+                            unified_xlsx, updates=updates
+                        )
+                        st.success(
+                            f"Categoria salva. DB: {updated_db} (faltantes {missing_db}) | "
+                            f"Excel: {updated_xlsx} (faltantes {missing_xlsx})"
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Falha ao salvar categorias: {e}")
     elif nav == "Config":
-        st.subheader("CartÃµes")
+        st.subheader("Cartões")
         st.json({k: vars(v) for k, v in cards.items()})
         st.caption("Editar em `config/cards.json`.")
 
-        st.subheader("Regras (auto-categorizaÃ§Ã£o)")
+        st.subheader("Regras (auto-categorização)")
         st.caption("Editar em `config/rules.json`.")
         st.json(rules_cfg)
         with st.expander("Exemplo de regra (copiar/colar)", expanded=False):
@@ -3357,10 +3325,10 @@ def main() -> None:
 }""",
                 language="json",
             )
-        if st.button("Aplicar regras aos lanÃ§amentos sem categoria/subcategoria", type="secondary"):
+        if st.button("Aplicar regras aos lançamentos sem categoria/subcategoria", type="secondary"):
             try:
                 updated = pf_rules_engine.apply_rules_to_transactions(conn, rules)
-                st.success(f"{updated} lanÃ§amento(s) atualizado(s).")
+                st.success(f"{updated} lançamento(s) atualizado(s).")
                 if updated:
                     sync_excels_ui()
             except Exception as e:  # noqa: BLE001
@@ -3381,4 +3349,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -768,23 +768,22 @@ def upsert_credit_card_transactions(conn: sqlite3.Connection, rows: Iterable[dic
             _update_from_row(transaction_id=int(zero_match["id"]), row_clean=row_clean)
             continue
 
-        # Check for duplicate by key fields (txn_date + cash_date + signed amount + description + account).
+        # Check for duplicate by key fields (txn_date + cash_date + signed amount + account).
         # We intentionally keep the sign strict to avoid merging purchase and refund that happen
         # with the same absolute value on the same day.
-        # Also skip this merge when the source_file is the same to preserve repeated charges
-        # that legitimately appear multiple times in one statement export.
+        # To avoid collapsing legitimate repeated charges (same amount/date/card),
+        # only merge when there is a unique candidate in DB.
         txn_date = row_clean.get("txn_date")
         cash_date = row_clean.get("cash_date")
         amount = row_clean.get("amount")
-        description = row_clean.get("description")
         account = row_clean.get("account")
         source_file = row_clean.get("source_file")
         source = row_clean.get("source")
         
-        if txn_date and cash_date and amount is not None and description:
+        if txn_date and cash_date and amount is not None:
             amount_f = float(amount)
             if account:
-                duplicate_match = conn.execute(
+                dup_matches = conn.execute(
                     """
                     SELECT id, row_hash
                     FROM transactions
@@ -792,16 +791,15 @@ def upsert_credit_card_transactions(conn: sqlite3.Connection, rows: Iterable[dic
                       AND txn_date = ?
                       AND cash_date = ?
                       AND ABS(amount - ?) < 0.01
-                      AND description = ?
                       AND account = ?
-                      AND (source = ? OR ? IS NULL OR source IS NULL)
+                      AND (source = ? OR source = 'excel_credit_card' OR ? IS NULL OR source IS NULL)
                       AND COALESCE(source_file, '') <> COALESCE(?, '')
-                    LIMIT 1
+                    LIMIT 2
                     """,
-                    (txn_date, cash_date, amount_f, description, account, source, source, source_file),
-                ).fetchone()
+                    (txn_date, cash_date, amount_f, account, source, source, source_file),
+                ).fetchall()
             else:
-                duplicate_match = conn.execute(
+                dup_matches = conn.execute(
                     """
                     SELECT id, row_hash
                     FROM transactions
@@ -809,14 +807,14 @@ def upsert_credit_card_transactions(conn: sqlite3.Connection, rows: Iterable[dic
                       AND txn_date = ?
                       AND cash_date = ?
                       AND ABS(amount - ?) < 0.01
-                      AND description = ?
-                      AND (source = ? OR ? IS NULL OR source IS NULL)
+                      AND (source = ? OR source = 'excel_credit_card' OR ? IS NULL OR source IS NULL)
                       AND COALESCE(source_file, '') <> COALESCE(?, '')
-                    LIMIT 1
+                    LIMIT 2
                     """,
-                    (txn_date, cash_date, amount_f, description, source, source, source_file),
-                ).fetchone()
+                    (txn_date, cash_date, amount_f, source, source, source_file),
+                ).fetchall()
             
+            duplicate_match = dup_matches[0] if len(dup_matches) == 1 else None
             if duplicate_match is not None:
                 # Update existing row with CSV data (better source) and new hash
                 conn.execute(
@@ -847,7 +845,7 @@ def upsert_credit_card_transactions(conn: sqlite3.Connection, rows: Iterable[dic
                 WHERE payment_method = 'credit_card'
                   AND txn_date = ?
                   AND ABS(amount - ?) < 0.01
-                  AND source = ?
+                  AND (source = ? OR source = 'excel_credit_card')
                   AND source_file = ?
             """
             params = [txn_date, amount_f, source, source_file]

@@ -90,6 +90,8 @@ def _guess_card_id_from_path(path: Path) -> str | None:
         return "c6"
     if "mercado" in n or "mp" in n:
         return "mercadopago"
+    if "porto" in n:
+        return "portobank"
     return None
 
 

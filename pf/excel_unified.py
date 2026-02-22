@@ -853,6 +853,84 @@ def update_credit_card_status(
     return updated
 
 
+def update_credit_card_categories(
+    path: Path,
+    *,
+    updates: Iterable[dict[str, Any]],
+) -> tuple[int, int]:
+    """
+    Atualiza Categoria/Subcategoria/Reembolsável na aba "Cartão" por row_hash.
+    Retorna (updated_count, missing_count).
+    """
+    if not path.exists():
+        return 0, 0
+    wb = load_workbook(path)
+    if "Cartão" not in wb.sheetnames:
+        return 0, 0
+
+    ws = wb["Cartão"]
+    headers: dict[str, int] = {}
+    for c in range(1, ws.max_column + 1):
+        v = ws.cell(row=1, column=c).value
+        if v:
+            headers[normalize_str(v)] = c
+
+    hash_col = _find_col(headers, ("hash (oculto)", "hash", "row_hash")) or 1
+    cat_col = _find_col(headers, ("categoria",)) or 4
+    sub_col = _find_col(headers, ("subcategoria",)) or 5
+    reemb_col = _find_col(headers, ("reembolsavel", "reembolsável", "reimbursable")) or 10
+
+    row_by_hash: dict[str, int] = {}
+    for r in range(2, ws.max_row + 1):
+        rh = str(ws.cell(row=r, column=hash_col).value or "").strip()
+        if rh and rh not in row_by_hash:
+            row_by_hash[rh] = r
+
+    updated = 0
+    missing = 0
+    touched = False
+
+    for u in updates:
+        rh = str(u.get("row_hash") or "").strip()
+        if not rh:
+            continue
+        row = row_by_hash.get(rh)
+        if row is None:
+            missing += 1
+            continue
+
+        changed = False
+
+        if "category" in u:
+            new_cat = (str(u.get("category") or "").strip() or "")
+            old_cat = str(ws.cell(row=row, column=cat_col).value or "").strip()
+            if new_cat != old_cat:
+                ws.cell(row=row, column=cat_col, value=new_cat)
+                changed = True
+
+        if "subcategory" in u:
+            new_sub = (str(u.get("subcategory") or "").strip() or "")
+            old_sub = str(ws.cell(row=row, column=sub_col).value or "").strip()
+            if new_sub != old_sub:
+                ws.cell(row=row, column=sub_col, value=new_sub)
+                changed = True
+
+        if "reimbursable" in u:
+            new_reemb = "Sim" if bool(u.get("reimbursable")) else "Não"
+            old_reemb = str(ws.cell(row=row, column=reemb_col).value or "").strip()
+            if new_reemb != old_reemb:
+                ws.cell(row=row, column=reemb_col, value=new_reemb)
+                changed = True
+
+        if changed:
+            updated += 1
+            touched = True
+
+    if touched:
+        wb.save(path)
+    return updated, missing
+
+
 def read_debitos_sheet(path: Path) -> list[dict[str, Any]]:
     """Lê a aba Débitos e retorna lista de dicts."""
     if not path.exists():
