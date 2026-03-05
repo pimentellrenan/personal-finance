@@ -779,6 +779,10 @@ def get_clean_download_bytes(path: Path) -> bytes:
             # Remove filtros
             if ws.auto_filter and ws.auto_filter.ref:
                 ws.auto_filter.ref = None
+            # Desocultar todas as linhas (filtro marca hidden=True)
+            for rd in ws.row_dimensions.values():
+                if rd.hidden:
+                    rd.hidden = False
             # Reset scroll/seleção para A1
             ws.sheet_view.topLeftCell = "A1"
             if ws.sheet_view.selection:
@@ -801,10 +805,11 @@ def _fix_date_formats(ws) -> None:
     """Aplica formato DD/MM/YYYY em colunas de data que contêm datetime."""
     from datetime import datetime as _dt, date as _date
     _DATE_FMT = "DD/MM/YYYY"
+    _KEEP = {_DATE_FMT, "DD/MM/YYYY HH:MM", "DD/MM/YYYY HH:MM:SS"}
     for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
         for cell in row:
             if isinstance(cell.value, (_dt, _date)) and (
-                cell.number_format in ("General", "general", None, "")
+                cell.number_format not in _KEEP
             ):
                 cell.number_format = _DATE_FMT
 
@@ -951,6 +956,48 @@ def _last_used_row(ws, *, key_cols: tuple[int, ...]) -> int:
     return last
 
 
+def _collect_existing_ids(
+    ws,
+    *,
+    hash_col: int,
+    origin_id_col: int | None,
+    fingerprint_cols: tuple[int, ...] | None = None,
+) -> tuple[set[str], set[str], set[tuple[str, ...]], int]:
+    """Return (existing_hashes, existing_origin_ids, content_fingerprints, last_used_row) for a sheet.
+
+    ``fingerprint_cols`` — column indices whose values form a content-based
+    dedup key (e.g. date + amount + description).  Used when the Excel rows
+    don't yet have a hash written.
+    """
+    hashes: set[str] = set()
+    oids: set[str] = set()
+    fps: set[tuple[str, ...]] = set()
+    last = 1
+    for r in range(2, ws.max_row + 1):
+        rh = str(ws.cell(row=r, column=hash_col).value or "").strip()
+        if rh:
+            hashes.add(rh)
+            last = r
+        if origin_id_col:
+            oid = str(ws.cell(row=r, column=origin_id_col).value or "").strip()
+            if oid:
+                oids.add(oid)
+        if fingerprint_cols:
+            fp = tuple(str(ws.cell(row=r, column=c).value or "").strip().lower() for c in fingerprint_cols)
+            if any(fp):
+                fps.add(fp)
+                if not rh:
+                    last = max(last, r)
+        elif not rh:
+            has_any = any(
+                ws.cell(row=r, column=c).value not in (None, "")
+                for c in range(1, min(ws.max_column + 1, 9))
+            )
+            if has_any:
+                last = r
+    return hashes, oids, fps, last
+
+
 def append_transactions_to_unified(
     path: Path,
     *,
@@ -961,7 +1008,7 @@ def append_transactions_to_unified(
 ) -> dict[str, int]:
     """
     Adiciona lançamentos no Excel unificado, em suas respectivas abas.
-    Espera rows no formato de transações do banco (txn_date/cash_date/amount/payment_method...).
+    Deduplicação por row_hash / origin_id em TODAS as abas.
     """
     all_rows = list(rows)
     if not all_rows:
@@ -998,12 +1045,44 @@ def append_transactions_to_unified(
     ws_receitas = wb["Receitas"] if "Receitas" in wb.sheetnames else None
     ws_contas = wb["Contas Casa"] if "Contas Casa" in wb.sheetnames else None
 
-    next_deb = (_last_used_row(ws_debitos, key_cols=(1, 4, 5)) + 1) if ws_debitos else 2
-    next_rec = (_last_used_row(ws_receitas, key_cols=(1, 3, 4)) + 1) if ws_receitas else 2
-    next_house = (_last_used_row(ws_contas, key_cols=(1, 2, 4, 5, 7)) + 1) if ws_contas else 2
+    # Collect existing hashes/origin_ids for dedup — mirrors append_credit_card_rows logic.
+    # Débitos:  Hash col=J(10), Origin ID col=K(11), fingerprint = date(1)+desc(4)+amount(5)
+    # Receitas: Hash col=F(6),  Origin ID col=G(7),  fingerprint = date(1)+desc(3)+amount(4)
+    # Contas:   Hash col=J(10), Origin ID col=K(11), fingerprint = ref(1)+desc(4)+amount(5)+paydate(7)
+    deb_hashes: set[str] = set()
+    deb_oids: set[str] = set()
+    deb_fps: set[tuple[str, ...]] = set()
+    next_deb = 2
+    if ws_debitos is not None:
+        deb_hashes, deb_oids, deb_fps, last_deb = _collect_existing_ids(
+            ws_debitos, hash_col=10, origin_id_col=11, fingerprint_cols=(1, 4, 5),
+        )
+        next_deb = last_deb + 1
+
+    rec_hashes: set[str] = set()
+    rec_oids: set[str] = set()
+    rec_fps: set[tuple[str, ...]] = set()
+    next_rec = 2
+    if ws_receitas is not None:
+        rec_hashes, rec_oids, rec_fps, last_rec = _collect_existing_ids(
+            ws_receitas, hash_col=6, origin_id_col=7, fingerprint_cols=(1, 3, 4),
+        )
+        next_rec = last_rec + 1
+
+    house_hashes: set[str] = set()
+    house_oids: set[str] = set()
+    house_fps: set[tuple[str, ...]] = set()
+    next_house = 2
+    if ws_contas is not None:
+        house_hashes, house_oids, house_fps, last_house = _collect_existing_ids(
+            ws_contas, hash_col=10, origin_id_col=11, fingerprint_cols=(1, 4, 5, 7),
+        )
+        next_house = last_house + 1
 
     for row in non_cc_rows:
         pm = str(row.get("payment_method") or "").strip()
+        rh = str(row.get("row_hash") or "").strip()
+        oid = str(row.get("origin_id") or "").strip()
         txn_dt = parse_date(row.get("txn_date"))
         cash_dt = parse_date(row.get("cash_date"))
         amount = row.get("amount")
@@ -1019,6 +1098,14 @@ def append_transactions_to_unified(
         if pm == "debit" and ws_debitos is not None:
             if txn_dt is None or not description:
                 continue
+            # Dedup by hash / origin_id / content fingerprint
+            if oid and oid in deb_oids:
+                continue
+            if rh and rh in deb_hashes:
+                continue
+            fp_deb = (str(txn_dt).strip().lower(), description.lower(), str(abs(amount_f)).strip().lower())
+            if fp_deb in deb_fps:
+                continue
             ws_debitos.cell(row=next_deb, column=1, value=txn_dt)
             ws_debitos.cell(row=next_deb, column=2, value=category)
             ws_debitos.cell(row=next_deb, column=3, value=subcategory)
@@ -1027,17 +1114,43 @@ def append_transactions_to_unified(
             ws_debitos.cell(row=next_deb, column=6, value="X" if normalize_str(person) == "aline" else "")
             ws_debitos.cell(row=next_deb, column=7, value="Sim" if bool(row.get("reimbursable")) else "Não")
             ws_debitos.cell(row=next_deb, column=8, value=notes)
+            if rh:
+                ws_debitos.cell(row=next_deb, column=10, value=rh)
+            if oid:
+                ws_debitos.cell(row=next_deb, column=11, value=oid)
+            if rh:
+                deb_hashes.add(rh)
+            if oid:
+                deb_oids.add(oid)
+            deb_fps.add(fp_deb)
             out["debit"] += 1
             next_deb += 1
 
         elif pm == "income" and ws_receitas is not None:
             if txn_dt is None or not description:
                 continue
+            # Dedup by hash / origin_id / content fingerprint
+            if oid and oid in rec_oids:
+                continue
+            if rh and rh in rec_hashes:
+                continue
+            fp_rec = (str(txn_dt).strip().lower(), description.lower(), str(abs(amount_f)).strip().lower())
+            if fp_rec in rec_fps:
+                continue
             ws_receitas.cell(row=next_rec, column=1, value=txn_dt)
             ws_receitas.cell(row=next_rec, column=2, value=category)
             ws_receitas.cell(row=next_rec, column=3, value=description)
             ws_receitas.cell(row=next_rec, column=4, value=abs(amount_f))
             ws_receitas.cell(row=next_rec, column=5, value=notes)
+            if rh:
+                ws_receitas.cell(row=next_rec, column=6, value=rh)
+            if oid:
+                ws_receitas.cell(row=next_rec, column=7, value=oid)
+            if rh:
+                rec_hashes.add(rh)
+            if oid:
+                rec_oids.add(oid)
+            rec_fps.add(fp_rec)
             out["income"] += 1
             next_rec += 1
 
@@ -1047,7 +1160,15 @@ def append_transactions_to_unified(
             payment_dt = cash_dt or txn_dt
             if payment_dt is None:
                 continue
+            # Dedup by hash / origin_id / content fingerprint
+            if oid and oid in house_oids:
+                continue
+            if rh and rh in house_hashes:
+                continue
             ref_month = str(row.get("reference") or "").strip() or payment_dt.strftime("%Y-%m")
+            fp_house = (ref_month.lower(), description.lower(), str(abs(amount_f)).strip().lower(), str(payment_dt).strip().lower())
+            if fp_house in house_fps:
+                continue
             ws_contas.cell(row=next_house, column=1, value=ref_month)
             ws_contas.cell(row=next_house, column=2, value=category)
             ws_contas.cell(row=next_house, column=3, value=subcategory)
@@ -1056,6 +1177,15 @@ def append_transactions_to_unified(
             ws_contas.cell(row=next_house, column=6, value="X" if normalize_str(person) == "aline" else "")
             ws_contas.cell(row=next_house, column=7, value=payment_dt)
             ws_contas.cell(row=next_house, column=8, value=notes)
+            if rh:
+                ws_contas.cell(row=next_house, column=10, value=rh)
+            if oid:
+                ws_contas.cell(row=next_house, column=11, value=oid)
+            if rh:
+                house_hashes.add(rh)
+            if oid:
+                house_oids.add(oid)
+            house_fps.add(fp_house)
             out["household"] += 1
             next_house += 1
 
