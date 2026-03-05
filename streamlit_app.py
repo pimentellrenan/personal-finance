@@ -883,6 +883,176 @@ def _expense_categories(expense_tree: dict) -> tuple[list[str], dict[str, list[s
     return categories, sub_map
 
 
+@st.fragment
+def _render_bulk_cat(
+    conn,
+    start,
+    end,
+    expense_categories_tree: dict,
+    unified_xlsx,
+) -> None:
+    """Seção de categorização em lote como fragmento isolado.
+
+    Zero rerun: todas as subcategorias são sempre exibidas.
+    Validação cat↔subcat acontece apenas no Salvar.
+    """
+    expense_cats, expense_sub_map = _expense_categories(expense_categories_tree)
+    # Lista plana de todas as subcategorias
+    all_subcats: list[str] = []
+    for subs in expense_sub_map.values():
+        for s in subs:
+            if s not in all_subcats:
+                all_subcats.append(s)
+    all_subcats.sort()
+
+    df_edit_src = pf_queries.load_transactions_df(conn, start=start, end=end)
+    _pm_filter_opts = ["Todos"] + sorted(
+        {str(r) for r in df_edit_src["payment_method"].dropna().unique()} if not df_edit_src.empty else []
+    )
+    _filter_cols = st.columns([2, 2, 1])
+    with _filter_cols[0]:
+        _pm_sel = st.selectbox("Forma de pagamento", _pm_filter_opts, key="cat_pm_filter", label_visibility="collapsed")
+    with _filter_cols[1]:
+        _cat_status = st.selectbox(
+            "Status",
+            ["Todos", "Sem categoria", "Já categorizados"],
+            key="cat_status_filter",
+            label_visibility="collapsed",
+        )
+    with _filter_cols[2]:
+        _reemb_only = st.checkbox("Só reembolsáveis", key="cat_reemb_filter")
+
+    _current_filter_key = (_pm_sel, _cat_status, _reemb_only, str(start), str(end))
+    _editor_key = f"bulk_cat_editor_{hash(_current_filter_key)}"
+
+    if df_edit_src.empty:
+        st.info("Sem transações no período.")
+        return
+    df_bulk = df_edit_src.copy()
+    df_bulk = df_bulk[df_bulk["payment_method"] != "income"].copy()
+    if _pm_sel != "Todos":
+        df_bulk = df_bulk[df_bulk["payment_method"] == _pm_sel]
+    if _cat_status == "Sem categoria":
+        df_bulk = df_bulk[df_bulk["category"].isna() | (df_bulk["category"].astype(str).str.strip() == "")]
+    elif _cat_status == "Já categorizados":
+        df_bulk = df_bulk[df_bulk["category"].notna() & (df_bulk["category"].astype(str).str.strip() != "")]
+    if _reemb_only:
+        df_bulk = df_bulk[df_bulk["reimbursable"].astype(int) == 1]
+
+    if df_bulk.empty:
+        st.info("Nenhuma transação com esse filtro.")
+        return
+
+    if "id" in df_bulk.columns:
+        df_bulk = df_bulk.sort_values("id", ascending=False)
+    df_bulk = df_bulk.head(300).reset_index(drop=True)
+
+    _edit_df = pd.DataFrame({
+        "row_hash": df_bulk["row_hash"].astype(str),
+        "Data": pd.to_datetime(df_bulk["txn_date"], errors="coerce").dt.strftime("%d/%m/%Y"),
+        "Conta": df_bulk.get("account", pd.Series([""] * len(df_bulk))).fillna("").astype(str),
+        "Descrição": df_bulk["description"].fillna("").astype(str),
+        "Valor": df_bulk["amount"].apply(lambda v: float(v)),
+        "Categoria": df_bulk["category"].fillna("").astype(str),
+        "Subcategoria": df_bulk["subcategory"].fillna("").astype(str),
+        "Reemb.": df_bulk["reimbursable"].astype(int).apply(lambda v: bool(v)),
+    })
+
+    cat_opts = [""] + expense_cats
+    sub_opts = [""] + all_subcats
+
+    edited = st.data_editor(
+        _edit_df,
+        column_config={
+            "row_hash": None,
+            "Data": st.column_config.TextColumn("Data", disabled=True, width="small"),
+            "Conta": st.column_config.TextColumn("Conta", disabled=True, width="small"),
+            "Descrição": st.column_config.TextColumn("Descrição", width="large"),
+            "Valor": st.column_config.NumberColumn("Valor", format="R$ %.2f", disabled=True, width="small"),
+            "Categoria": st.column_config.SelectboxColumn("Categoria", options=cat_opts, width="medium"),
+            "Subcategoria": st.column_config.SelectboxColumn("Subcategoria", options=sub_opts, width="medium"),
+            "Reemb.": st.column_config.CheckboxColumn("Reemb.", width="small"),
+        },
+        hide_index=True,
+        use_container_width=True,
+        key=_editor_key,
+        num_rows="fixed",
+    )
+
+    # ── Validação e correção de subcategorias no momento do save ──────
+    edited_to_save = edited.copy()
+    auto_fixed_subcats = 0
+    for i in range(len(edited_to_save)):
+        cat_now = str(edited_to_save.at[i, "Categoria"] or "").strip()
+        sub_now = str(edited_to_save.at[i, "Subcategoria"] or "").strip()
+        allowed_subs = expense_sub_map.get(cat_now, []) if cat_now else []
+
+        sub_new = sub_now
+        if not cat_now:
+            sub_new = ""
+        elif not allowed_subs:
+            sub_new = ""
+        elif sub_now and sub_now not in allowed_subs:
+            sub_new = ""
+
+        if sub_new != sub_now:
+            edited_to_save.at[i, "Subcategoria"] = sub_new
+            auto_fixed_subcats += 1
+
+    # ── Detectar linhas alteradas ────────────────────────────────────
+    _changed = edited_to_save[
+        (edited_to_save["Descrição"] != _edit_df["Descrição"])
+        | (edited["Categoria"] != _edit_df["Categoria"])
+        | (edited_to_save["Subcategoria"] != _edit_df["Subcategoria"])
+        | (edited["Reemb."] != _edit_df["Reemb."])
+    ]
+    n_changed = len(_changed)
+
+    _save_col, _info_col = st.columns([1, 3])
+    with _save_col:
+        save_btn = st.button(
+            f"💾 Salvar {n_changed} alteração(ões)" if n_changed else "💾 Salvar",
+            type="primary",
+            disabled=(n_changed == 0),
+            key="bulk_cat_save",
+        )
+    with _info_col:
+        if n_changed:
+            st.caption(f"✏️ {n_changed} linha(s) modificada(s) — clique Salvar para confirmar.")
+            if auto_fixed_subcats > 0:
+                st.caption(
+                    f"🔧 {auto_fixed_subcats} subcategoria(s) serão ajustadas ao salvar (cat↔subcat incompatível)."
+                )
+        else:
+            st.caption("Edite Descrição / Categoria / Subcategoria / Reemb. nas linhas desejadas e salve.")
+
+    if save_btn and n_changed:
+        updates = [
+            {
+                "row_hash": str(row["row_hash"]),
+                "description": str(row["Descrição"] or "").strip(),
+                "category": (str(row["Categoria"]).strip() or None),
+                "subcategory": (str(row["Subcategoria"]).strip() or None),
+                "reimbursable": bool(row["Reemb."]),
+            }
+            for _, row in _changed.iterrows()
+        ]
+        try:
+            updated_db, missing_db = pf_db.bulk_update_categories_by_row_hash(
+                conn, updates, allow_clear=True
+            )
+            updated_xlsx, missing_xlsx = pf_excel_unified.update_credit_card_categories(
+                unified_xlsx, updates=updates
+            )
+            st.success(
+                f"✅ {updated_db} transação(ões) salva(s) no banco "
+                f"({missing_db} não encontradas) | "
+                f"Excel: {updated_xlsx} atualizada(s)."
+            )
+        except Exception as e:
+            st.error(f"Falha ao salvar: {e}")
+
+
 def _income_categories(income_tree: dict) -> list[str]:
     # Expected: {"Receitas": [..]}
     node = income_tree.get("Receitas")
@@ -1214,6 +1384,15 @@ def main() -> None:
             st.download_button(
                 "📊 Abrir Excel (baixar)",
                 data=excel_bytes,
+                file_name="financas.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width="stretch",
+            )
+        elif unified_xlsx.exists():
+            # Arquivo existe mas get_clean_download_bytes falhou — oferecer raw
+            st.download_button(
+                "📊 Abrir Excel (baixar)",
+                data=unified_xlsx.read_bytes(),
                 file_name="financas.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width="stretch",
@@ -2870,233 +3049,7 @@ def main() -> None:
 
         st.divider()
         st.subheader("🏷️ Categorização em lote")
-
-        expense_cats, expense_sub_map = _expense_categories(expense_categories_tree)
-        # Lista plana de todas as subcategorias (fallback quando sem filtro ativo)
-        all_subcats: list[str] = []
-        for subs in expense_sub_map.values():
-            for s in subs:
-                if s not in all_subcats:
-                    all_subcats.append(s)
-        all_subcats.sort()
-
-        df_edit_src = pf_queries.load_transactions_df(conn, start=start, end=end)
-        _pm_filter_opts = ["Todos"] + sorted(
-            {str(r) for r in df_edit_src["payment_method"].dropna().unique()} if not df_edit_src.empty else []
-        )
-        _filter_cols = st.columns([2, 2, 1])
-        with _filter_cols[0]:
-            _pm_sel = st.selectbox("Forma de pagamento", _pm_filter_opts, key="cat_pm_filter", label_visibility="collapsed")
-        with _filter_cols[1]:
-            _cat_status = st.selectbox(
-                "Status",
-                ["Todos", "Sem categoria", "Já categorizados"],
-                key="cat_status_filter",
-                label_visibility="collapsed",
-            )
-        with _filter_cols[2]:
-            _reemb_only = st.checkbox("Só reembolsáveis", key="cat_reemb_filter")
-
-        # Chaves de session_state para mecanismo de edição sem perda de posição
-        _SS_PENDING = "bulk_cat_pending"
-        _SS_VERSION = "bulk_cat_v"
-        _SS_ACTIVE_CAT = "bulk_cat_active_cat"
-        _SS_FILTER_KEY = "bulk_cat_filter_key"
-        _current_filter_key = (_pm_sel, _cat_status, _reemb_only, str(start), str(end))
-
-        # Invalidar estado pendente quando filtro/período mudar
-        if st.session_state.get(_SS_FILTER_KEY) != _current_filter_key:
-            st.session_state.pop(_SS_PENDING, None)
-            st.session_state.pop(_SS_ACTIVE_CAT, None)
-            st.session_state[_SS_FILTER_KEY] = _current_filter_key
-
-        if df_edit_src.empty:
-            st.info("Sem transações no período.")
-        else:
-            df_bulk = df_edit_src.copy()
-            df_bulk = df_bulk[df_bulk["payment_method"] != "income"].copy()
-            if _pm_sel != "Todos":
-                df_bulk = df_bulk[df_bulk["payment_method"] == _pm_sel]
-            if _cat_status == "Sem categoria":
-                df_bulk = df_bulk[df_bulk["category"].isna() | (df_bulk["category"].astype(str).str.strip() == "")]
-            elif _cat_status == "Já categorizados":
-                df_bulk = df_bulk[df_bulk["category"].notna() & (df_bulk["category"].astype(str).str.strip() != "")]
-            if _reemb_only:
-                df_bulk = df_bulk[df_bulk["reimbursable"].astype(int) == 1]
-
-            if df_bulk.empty:
-                st.info("Nenhuma transação com esse filtro.")
-            else:
-                if "id" in df_bulk.columns:
-                    df_bulk = df_bulk.sort_values("id", ascending=False)
-                df_bulk = df_bulk.head(300).reset_index(drop=True)
-
-                # DataFrame base (vindo do banco)
-                _edit_df_db = pd.DataFrame({
-                    "row_hash": df_bulk["row_hash"].astype(str),
-                    "Data": pd.to_datetime(df_bulk["txn_date"], errors="coerce").dt.strftime("%d/%m/%Y"),
-                    "Conta": df_bulk.get("account", pd.Series([""] * len(df_bulk))).fillna("").astype(str),
-                    "Descrição": df_bulk["description"].fillna("").astype(str),
-                    "Valor": df_bulk["amount"].apply(lambda v: float(v)),
-                    "Categoria": df_bulk["category"].fillna("").astype(str),
-                    "Subcategoria": df_bulk["subcategory"].fillna("").astype(str),
-                    "Reemb.": df_bulk["reimbursable"].astype(int).apply(lambda v: bool(v)),
-                })
-
-                # Usar estado pendente se existir e corresponder às mesmas linhas do banco
-                _pending = st.session_state.get(_SS_PENDING)
-                _editor_version = st.session_state.get(_SS_VERSION, 0)
-                if (
-                    _pending is not None
-                    and len(_pending) == len(_edit_df_db)
-                    and list(_pending["row_hash"]) == list(_edit_df_db["row_hash"])
-                ):
-                    _edit_df = _pending
-                else:
-                    _edit_df = _edit_df_db
-                    st.session_state.pop(_SS_ACTIVE_CAT, None)
-
-                # Opções de subcategoria: filtradas pela categoria ativa (último clique)
-                # para guia hierárquica; volta a lista completa quando não há seleção ativa.
-                _active_cat = st.session_state.get(_SS_ACTIVE_CAT, "")
-                if _active_cat and _active_cat in expense_sub_map:
-                    sub_opts = [""] + expense_sub_map[_active_cat]
-                else:
-                    sub_opts = [""] + all_subcats
-
-                cat_opts = [""] + expense_cats
-
-                edited = st.data_editor(
-                    _edit_df,
-                    column_config={
-                        "row_hash": None,  # oculta
-                        "Data": st.column_config.TextColumn("Data", disabled=True, width="small"),
-                        "Conta": st.column_config.TextColumn("Conta", disabled=True, width="small"),
-                        "Descrição": st.column_config.TextColumn("Descrição", width="large"),
-                        "Valor": st.column_config.NumberColumn("Valor", format="R$ %.2f", disabled=True, width="small"),
-                        "Categoria": st.column_config.SelectboxColumn("Categoria", options=cat_opts, width="medium"),
-                        "Subcategoria": st.column_config.SelectboxColumn("Subcategoria", options=sub_opts, width="medium"),
-                        "Reemb.": st.column_config.CheckboxColumn("Reemb.", width="small"),
-                    },
-                    hide_index=True,
-                    use_container_width=True,
-                    key=f"bulk_cat_editor_{_editor_version}",
-                    num_rows="fixed",
-                )
-
-                # ── Detectar troca de categoria ──────────────────────────────────────
-                # Quando o usuário muda a categoria, limpar a subcategoria imediatamente
-                # na UI (por rerun), mostrando só as subcategorias da nova categoria.
-                _cat_changed_rows: list[int] = []
-                _new_active_cat = ""
-                for _ci in range(len(edited)):
-                    _cat_now = str(edited.at[_ci, "Categoria"] or "").strip()
-                    _cat_orig = str(_edit_df.at[_ci, "Categoria"] or "").strip()
-                    if _cat_now != _cat_orig:
-                        _cat_changed_rows.append(_ci)
-                        if not _new_active_cat:
-                            _new_active_cat = _cat_now
-
-                if _cat_changed_rows:
-                    _new_pending = edited.copy()
-                    for _ci in _cat_changed_rows:
-                        # Limpa subcategoria da linha que teve categoria trocada
-                        _new_pending.at[_ci, "Subcategoria"] = ""
-                    st.session_state[_SS_PENDING] = _new_pending
-                    st.session_state[_SS_ACTIVE_CAT] = _new_active_cat
-                    st.session_state[_SS_VERSION] = _editor_version + 1
-                    st.rerun()
-
-                # ── Detectar seleção de subcategoria → restaurar lista completa ────
-                # Após o usuário escolher uma subcategoria, volta a mostrar todas
-                # as subcategorias no próximo render para não travar o editor.
-                if _active_cat:
-                    for _ci in range(len(edited)):
-                        _sub_now = str(edited.at[_ci, "Subcategoria"] or "").strip()
-                        _sub_orig = str(_edit_df.at[_ci, "Subcategoria"] or "").strip()
-                        if _sub_now != _sub_orig and _sub_now:
-                            st.session_state.pop(_SS_ACTIVE_CAT, None)
-                            break
-
-                # ── Validação de subcategorias incompatíveis ─────────────────────
-                edited_to_save = edited.copy()
-                auto_fixed_subcats = 0
-                for i in range(len(edited_to_save)):
-                    cat_now = str(edited_to_save.at[i, "Categoria"] or "").strip()
-                    sub_now = str(edited_to_save.at[i, "Subcategoria"] or "").strip()
-                    allowed_subs = expense_sub_map.get(cat_now, []) if cat_now else []
-
-                    sub_new = sub_now
-                    if not cat_now:
-                        sub_new = ""
-                    elif not allowed_subs:
-                        sub_new = ""
-                    elif sub_now and sub_now not in allowed_subs:
-                        sub_new = ""
-
-                    if sub_new != sub_now:
-                        edited_to_save.at[i, "Subcategoria"] = sub_new
-                        auto_fixed_subcats += 1
-
-                # ── Detectar linhas alteradas ────────────────────────────────────
-                _changed = edited_to_save[
-                    (edited_to_save["Descrição"] != _edit_df["Descrição"])
-                    | (edited["Categoria"] != _edit_df["Categoria"])
-                    | (edited_to_save["Subcategoria"] != _edit_df["Subcategoria"])
-                    | (edited["Reemb."] != _edit_df["Reemb."])
-                ]
-                n_changed = len(_changed)
-
-                _save_col, _info_col = st.columns([1, 3])
-                with _save_col:
-                    save_btn = st.button(
-                        f"💾 Salvar {n_changed} alteração(ões)" if n_changed else "💾 Salvar",
-                        type="primary",
-                        disabled=(n_changed == 0),
-                        width="stretch",
-                        key="bulk_cat_save",
-                    )
-                with _info_col:
-                    if n_changed:
-                        st.caption(f"✏️ {n_changed} linha(s) modificada(s) — clique Salvar para confirmar.")
-                        if auto_fixed_subcats > 0:
-                            st.caption(
-                                f"🔧 {auto_fixed_subcats} subcategoria(s) foram limpas por troca/inconsistência de categoria."
-                            )
-                    else:
-                        st.caption("Edite Descrição / Categoria / Subcategoria / Reemb. nas linhas desejadas e salve.")
-
-                if save_btn and n_changed:
-                    updates = [
-                        {
-                            "row_hash": str(row["row_hash"]),
-                            "description": str(row["Descrição"] or "").strip(),
-                            "category": (str(row["Categoria"]).strip() or None),
-                            "subcategory": (str(row["Subcategoria"]).strip() or None),
-                            "reimbursable": bool(row["Reemb."]),
-                        }
-                        for _, row in _changed.iterrows()
-                    ]
-                    try:
-                        updated_db, missing_db = pf_db.bulk_update_categories_by_row_hash(
-                            conn, updates, allow_clear=True
-                        )
-                        updated_xlsx, missing_xlsx = pf_excel_unified.update_credit_card_categories(
-                            unified_xlsx, updates=updates
-                        )
-                        st.success(
-                            f"✅ {updated_db} transação(ões) salva(s) no banco "
-                            f"({missing_db} não encontradas) | "
-                            f"Excel: {updated_xlsx} atualizada(s)."
-                        )
-                        # Preservar estado editado para manter linhas na mesma posição
-                        # após salvar (evita sumiço por filtro "Sem categoria" etc.).
-                        st.session_state[_SS_PENDING] = edited_to_save.copy()
-                        st.session_state.pop(_SS_ACTIVE_CAT, None)
-                        st.session_state[_SS_VERSION] = _editor_version + 1
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Falha ao salvar: {e}")
+        _render_bulk_cat(conn, start, end, expense_categories_tree, unified_xlsx)
     elif nav == review_label:
         st.subheader("🔍 Revisão de Importação")
         st.caption(

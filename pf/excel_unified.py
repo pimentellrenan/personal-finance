@@ -528,24 +528,29 @@ def _compact_sheet_rows(
     Compacts a sheet by removing blank rows between data rows.
     A row is considered "data" when any `key_cols` cell is filled.
     Returns True when compaction changed the sheet.
+    Preserves cell number_format so dates stay formatted.
     """
     if ws is None:
         return False
 
     used_rows: list[int] = []
-    kept_values: list[list[object]] = []
+    kept_data: list[list[tuple[object, str | None]]] = []  # (value, number_format)
     for r in range(2, int(ws.max_row) + 1):
         has_data = any(ws.cell(row=r, column=c).value not in (None, "") for c in key_cols)
         if not has_data:
             continue
         used_rows.append(r)
-        kept_values.append([ws.cell(row=r, column=c).value for c in range(1, int(max_col) + 1)])
+        row_data: list[tuple[object, str | None]] = []
+        for c in range(1, int(max_col) + 1):
+            cell = ws.cell(row=r, column=c)
+            nf = cell.number_format if cell.number_format != "General" else None
+            row_data.append((cell.value, nf))
+        kept_data.append(row_data)
 
     contiguous_rows = used_rows == list(range(2, 2 + len(used_rows)))
     # Only compact when there are holes between data rows.
     # Trailing rows are expected because we keep validation ranges pre-allocated.
-    needs_compact = not contiguous_rows
-    if not needs_compact:
+    if contiguous_rows:
         return False
 
     # Remove all body rows and rewrite only real data rows contiguously.
@@ -553,10 +558,11 @@ def _compact_sheet_rows(
     if body_rows:
         ws.delete_rows(2, body_rows)
 
-    for idx, row_values in enumerate(kept_values, start=2):
-        for c, v in enumerate(row_values, start=1):
-            if v is not None:
-                ws.cell(row=idx, column=c, value=v)
+    for idx, row_values in enumerate(kept_data, start=2):
+        for c, (v, nf) in enumerate(row_values, start=1):
+            cell = ws.cell(row=idx, column=c, value=v)
+            if nf:
+                cell.number_format = nf
 
     return True
 
@@ -770,8 +776,17 @@ def get_clean_download_bytes(path: Path) -> bytes:
     try:
         wb = load_workbook(path)
         for ws in wb.worksheets:
+            # Remove filtros
             if ws.auto_filter and ws.auto_filter.ref:
                 ws.auto_filter.ref = None
+            # Reset scroll/seleção para A1
+            ws.sheet_view.topLeftCell = "A1"
+            if ws.sheet_view.selection:
+                for sel in ws.sheet_view.selection:
+                    sel.activeCell = "A1"
+                    sel.sqref = "A1"
+            # Garantir formato de data nas colunas de data
+            _fix_date_formats(ws)
         buf = io.BytesIO()
         wb.save(buf)
         return buf.getvalue()
@@ -780,6 +795,18 @@ def get_clean_download_bytes(path: Path) -> bytes:
             return path.read_bytes()
         except Exception:  # noqa: BLE001
             return b""
+
+
+def _fix_date_formats(ws) -> None:
+    """Aplica formato DD/MM/YYYY em colunas de data que contêm datetime."""
+    from datetime import datetime as _dt, date as _date
+    _DATE_FMT = "DD/MM/YYYY"
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+        for cell in row:
+            if isinstance(cell.value, (_dt, _date)) and (
+                cell.number_format in ("General", "general", None, "")
+            ):
+                cell.number_format = _DATE_FMT
 
 
 # ============================================================================
