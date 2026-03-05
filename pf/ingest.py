@@ -82,6 +82,37 @@ def ingest_credit_card_csv(
     if rules:
         apply_rules_to_rows(rows, rules)
     inserted = upsert_credit_card_transactions(conn, rows)
+
+    # Statement CSVs whose filename carries a due date are treated as the
+    # source-of-truth snapshot for that (card, due_date) statement.
+    # Any currently visible row from the same statement that is not present
+    # in this import is soft-hidden to avoid stale + new rows being summed together.
+    due_dt = extract_statement_due_date_from_path(path)
+    if due_dt is not None:
+        imported_hashes = sorted(
+            {
+                str(r.get("row_hash") or "").strip()
+                for r in rows
+                if str(r.get("row_hash") or "").strip()
+            }
+        )
+        if imported_hashes:
+            placeholders = ", ".join(["?"] * len(imported_hashes))
+            params = [now_iso(), card.name, due_dt.isoformat(), *imported_hashes]
+            conn.execute(
+                f"""
+                UPDATE transactions
+                SET hidden_in_excel = 1, updated_at = ?
+                WHERE payment_method = 'credit_card'
+                  AND account = ?
+                  AND statement_due_date = ?
+                  AND COALESCE(hidden_in_excel, 0) = 0
+                  AND row_hash NOT IN ({placeholders})
+                """,
+                params,
+            )
+            conn.commit()
+
     register_import(conn, file_hash=file_hash, file_path=str(path), importer=f"credit_card_csv:{card.id}", rows=len(rows))
     return IngestResult(imported=True, rows_read=len(rows), rows_inserted=inserted, file_hash=file_hash)
 
@@ -207,8 +238,8 @@ def sync_credit_card_from_excel(
 
     - Updates user-editable fields only (description, category, subcategory, person,
       notes) — never overwrites amounts or dates that came from a CSV import.
-    - Does NOT soft-hide CC rows missing from the sheet, because the user may have
-      uploaded an Excel with a filtered/partial sheet.
+        - Soft-hides CC rows missing from the sheet (hidden_in_excel = 1), so deleting
+            a line in Excel reflects in DB totals while preserving history.
     """
     file_hash = sha256_file(path)
     parsed = read_credit_card_master_xlsx(
@@ -221,7 +252,7 @@ def sync_credit_card_from_excel(
         conn,
         payment_method="credit_card",
         rows=parsed.rows,
-        delete_missing=False,
+        delete_missing=True,
         user_fields_only=True,
     )
 

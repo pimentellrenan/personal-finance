@@ -93,7 +93,6 @@ def migrate(conn: sqlite3.Connection) -> None:
         );
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_row_hash ON transactions(row_hash);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_origin_id ON transactions(origin_id) WHERE origin_id IS NOT NULL;
         CREATE INDEX IF NOT EXISTS idx_transactions_txn_date ON transactions(txn_date);
         CREATE INDEX IF NOT EXISTS idx_transactions_cash_date ON transactions(cash_date);
         CREATE INDEX IF NOT EXISTS idx_transactions_due_date ON transactions(statement_due_date);
@@ -975,6 +974,8 @@ def upsert_credit_card_transactions(conn: sqlite3.Connection, rows: Iterable[dic
             "source_file": row_clean.get("source_file"),
             "source_hash": row_clean.get("source_hash"),
             "external_id": row_clean.get("external_id"),
+            # If a row appears again in a CSV import, it must be visible.
+            "hidden_in_excel": 0,
             "updated_at": now,
         }
 
@@ -1341,6 +1342,7 @@ def bulk_update_categories_by_row_hash(
 ) -> tuple[int, int]:
     """
     Updates many rows identified by `row_hash`.
+    Supports: description, category, subcategory, person, reimbursable.
     Returns `(updated_count, missing_count)`.
     """
     cur = conn.cursor()
@@ -1360,10 +1362,13 @@ def bulk_update_categories_by_row_hash(
 
         category = u.get("category")
         subcategory = u.get("subcategory")
+        description = u.get("description")
         person = u.get("person")
         reimbursable = u.get("reimbursable")
 
         fields: dict[str, object] = {}
+        if "description" in u:
+            fields["description"] = str(description or "").strip()
         if allow_clear or (category is not None and str(category).strip() != ""):
             fields["category"] = (str(category).strip() or None) if category is not None else None
         if allow_clear or (subcategory is not None and str(subcategory).strip() != ""):
