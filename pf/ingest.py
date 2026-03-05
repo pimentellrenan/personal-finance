@@ -10,6 +10,8 @@ from openpyxl import load_workbook
 from pf.config import CardConfig
 from pf.db import (
     SyncResult,
+    add_pending_review,
+    count_pending_reviews,
     bulk_update_categories_by_row_hash,
     is_imported,
     insert_transactions,
@@ -80,6 +82,37 @@ def ingest_credit_card_csv(
     if rules:
         apply_rules_to_rows(rows, rules)
     inserted = upsert_credit_card_transactions(conn, rows)
+
+    # Statement CSVs whose filename carries a due date are treated as the
+    # source-of-truth snapshot for that (card, due_date) statement.
+    # Any currently visible row from the same statement that is not present
+    # in this import is soft-hidden to avoid stale + new rows being summed together.
+    due_dt = extract_statement_due_date_from_path(path)
+    if due_dt is not None:
+        imported_hashes = sorted(
+            {
+                str(r.get("row_hash") or "").strip()
+                for r in rows
+                if str(r.get("row_hash") or "").strip()
+            }
+        )
+        if imported_hashes:
+            placeholders = ", ".join(["?"] * len(imported_hashes))
+            params = [now_iso(), card.name, due_dt.isoformat(), *imported_hashes]
+            conn.execute(
+                f"""
+                UPDATE transactions
+                SET hidden_in_excel = 1, updated_at = ?
+                WHERE payment_method = 'credit_card'
+                  AND account = ?
+                  AND statement_due_date = ?
+                  AND COALESCE(hidden_in_excel, 0) = 0
+                  AND row_hash NOT IN ({placeholders})
+                """,
+                params,
+            )
+            conn.commit()
+
     register_import(conn, file_hash=file_hash, file_path=str(path), importer=f"credit_card_csv:{card.id}", rows=len(rows))
     return IngestResult(imported=True, rows_read=len(rows), rows_inserted=inserted, file_hash=file_hash)
 
@@ -200,10 +233,13 @@ def sync_credit_card_from_excel(
     card_owner_by_name: dict[str, str] | None = None,
 ) -> SyncResult:
     """
-    Syncs the DB from Excel `templates/cartao_credito.xlsx` (Excel as source of truth).
+    Syncs the DB from the "Cartão" sheet in the unified Excel (Excel edits as source of
+    truth for user fields).
 
-    - Upserts DB rows by hash overwriting fields with the Excel values.
-    - Deletes DB credit-card rows that are not present in the workbook.
+    - Updates user-editable fields only (description, category, subcategory, person,
+      notes) — never overwrites amounts or dates that came from a CSV import.
+        - Soft-hides CC rows missing from the sheet (hidden_in_excel = 1), so deleting
+            a line in Excel reflects in DB totals while preserving history.
     """
     file_hash = sha256_file(path)
     parsed = read_credit_card_master_xlsx(
@@ -217,6 +253,7 @@ def sync_credit_card_from_excel(
         payment_method="credit_card",
         rows=parsed.rows,
         delete_missing=True,
+        user_fields_only=True,
     )
 
 
@@ -260,6 +297,7 @@ def sync_debit_from_unified_excel(conn, *, path: Path) -> SyncResult:
             )
         rows.append(
             {
+                "origin_id": str(r.get("origin_id") or "").strip() or None,
                 "row_hash": row_hash,
                 "txn_date": dt.isoformat(),
                 "cash_date": cash_dt.isoformat(),
@@ -284,7 +322,9 @@ def sync_debit_from_unified_excel(conn, *, path: Path) -> SyncResult:
                 "updated_at": created,
             }
         )
-    return sync_transactions_by_row_hash(conn, payment_method="debit", rows=rows, delete_missing=True)
+    return sync_transactions_by_row_hash(
+        conn, payment_method="debit", rows=rows, delete_missing=True, user_fields_only=False
+    )
 
 
 def sync_income_from_unified_excel(conn, *, path: Path) -> SyncResult:
@@ -327,6 +367,7 @@ def sync_income_from_unified_excel(conn, *, path: Path) -> SyncResult:
             )
         rows.append(
             {
+                "origin_id": str(r.get("origin_id") or "").strip() or None,
                 "row_hash": row_hash,
                 "txn_date": dt.isoformat(),
                 "cash_date": cash_dt.isoformat(),
@@ -351,7 +392,9 @@ def sync_income_from_unified_excel(conn, *, path: Path) -> SyncResult:
                 "updated_at": created,
             }
         )
-    return sync_transactions_by_row_hash(conn, payment_method="income", rows=rows, delete_missing=True)
+    return sync_transactions_by_row_hash(
+        conn, payment_method="income", rows=rows, delete_missing=True, user_fields_only=False
+    )
 
 
 def sync_household_from_unified_excel(
@@ -414,6 +457,7 @@ def sync_household_from_unified_excel(
 
         rows.append(
             {
+                "origin_id": str(r.get("origin_id") or "").strip() or None,
                 "row_hash": row_hash,
                 "txn_date": txn_date,
                 "cash_date": cash_date,
@@ -438,7 +482,9 @@ def sync_household_from_unified_excel(
                 "updated_at": created,
             }
         )
-    return sync_transactions_by_row_hash(conn, payment_method="household", rows=rows, delete_missing=True)
+    return sync_transactions_by_row_hash(
+        conn, payment_method="household", rows=rows, delete_missing=True, user_fields_only=False
+    )
 
 
 def sync_unified_from_excel(

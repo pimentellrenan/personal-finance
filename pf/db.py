@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import sqlite3
+import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from datetime import date as dt_date
 from pathlib import Path
 from typing import Iterable
@@ -38,12 +40,22 @@ def connect(db_path: Path, check_same_thread: bool = True) -> sqlite3.Connection
 
 
 def now_iso() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def new_origin_id() -> str:
+    """Generates a stable UUID4 string to uniquely identify a transaction for life."""
+    return str(uuid.uuid4())
 
 
 def migrate(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS imports (
             hash TEXT PRIMARY KEY,
             file_path TEXT NOT NULL,
@@ -54,6 +66,7 @@ def migrate(conn: sqlite3.Connection) -> None:
 
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            origin_id TEXT,
             row_hash TEXT NOT NULL,
             txn_date TEXT NOT NULL,
             cash_date TEXT NOT NULL,
@@ -74,6 +87,7 @@ def migrate(conn: sqlite3.Connection) -> None:
             source_file TEXT,
             source_hash TEXT,
             external_id TEXT,
+            hidden_in_excel INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -82,6 +96,18 @@ def migrate(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_transactions_txn_date ON transactions(txn_date);
         CREATE INDEX IF NOT EXISTS idx_transactions_cash_date ON transactions(cash_date);
         CREATE INDEX IF NOT EXISTS idx_transactions_due_date ON transactions(statement_due_date);
+        CREATE INDEX IF NOT EXISTS idx_transactions_dedup ON transactions(txn_date, amount, account);
+
+        CREATE TABLE IF NOT EXISTS pending_review (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            incoming_json TEXT NOT NULL,
+            candidate_ids TEXT,
+            source_file TEXT,
+            match_type TEXT,
+            created_at TEXT NOT NULL,
+            resolved_at TEXT,
+            resolution TEXT
+        );
 
         CREATE TABLE IF NOT EXISTS credit_card_statements (
             card_source TEXT NOT NULL,
@@ -124,13 +150,63 @@ def migrate(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_investment_monthly_period ON investment_monthly(year, month);
         """
     )
-    # Backward-compatible migration: older DBs won't have checked_at
+
+    # ── Backward-compatible column migrations ──────────────────────────────
+    # Each block attempts to add a column only if it is missing; safe to run on
+    # every startup because ALTER TABLE fails silently in the except clause.
+
+    def _add_col_if_missing(table: str, col: str, definition: str) -> None:
+        try:
+            cols = {str(r[1]) for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if col not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {definition};")
+        except Exception:  # noqa: BLE001
+            pass
+
+    _add_col_if_missing("investment_monthly", "checked_at", "TEXT")
+    _add_col_if_missing("transactions", "origin_id", "TEXT")
+    _add_col_if_missing("transactions", "hidden_in_excel", "INTEGER NOT NULL DEFAULT 0")
+
+    # Ensure the unique index on origin_id exists (silently ignores if already there).
     try:
-        cols = {str(r[1]) for r in conn.execute("PRAGMA table_info(investment_monthly)").fetchall()}
-        if "checked_at" not in cols:
-            conn.execute("ALTER TABLE investment_monthly ADD COLUMN checked_at TEXT;")
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_origin_id "
+            "ON transactions(origin_id) WHERE origin_id IS NOT NULL;"
+        )
     except Exception:  # noqa: BLE001
         pass
+
+    # Ensure the composite dedupe index exists.
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_transactions_dedup "
+            "ON transactions(txn_date, amount, account);"
+        )
+    except Exception:  # noqa: BLE001
+        pass
+
+    conn.commit()
+
+    # ── Data migrations (one-time) ──────────────────────────────────────────
+    _migrate_populate_origin_ids(conn)
+
+
+def _migrate_populate_origin_ids(conn: sqlite3.Connection) -> None:
+    """
+    One-time: assigns a UUID origin_id to every existing transaction that
+    doesn't have one yet.  After the first run this becomes a no-op.
+    """
+    rows = conn.execute(
+        "SELECT id FROM transactions WHERE origin_id IS NULL"
+    ).fetchall()
+    if not rows:
+        return
+    now = now_iso()
+    updates = [(str(uuid.uuid4()), now, int(r["id"])) for r in rows]
+    conn.executemany(
+        "UPDATE transactions SET origin_id = ?, updated_at = ? WHERE id = ?",
+        updates,
+    )
     conn.commit()
 
 
@@ -422,27 +498,36 @@ def upsert_investment_monthly(
 def insert_transactions(conn: sqlite3.Connection, rows: Iterable[dict]) -> int:
     sql = """
     INSERT OR IGNORE INTO transactions(
-        row_hash, txn_date, cash_date, amount, description,
+        origin_id, row_hash, txn_date, cash_date, amount, description,
         group_name, category, subcategory,
         payment_method, account, source,
         statement_closing_date, statement_due_date,
         person, reimbursable, reference, notes,
         source_file, source_hash, external_id,
+        hidden_in_excel,
         created_at, updated_at
     )
     VALUES(
-        :row_hash, :txn_date, :cash_date, :amount, :description,
+        :origin_id, :row_hash, :txn_date, :cash_date, :amount, :description,
         :group_name, :category, :subcategory,
         :payment_method, :account, :source,
         :statement_closing_date, :statement_due_date,
         :person, :reimbursable, :reference, :notes,
         :source_file, :source_hash, :external_id,
+        :hidden_in_excel,
         :created_at, :updated_at
     )
     """
     cur = conn.cursor()
     n = 0
+    now = now_iso()
     for row in rows:
+        row = dict(row)
+        if not row.get("origin_id"):
+            row["origin_id"] = new_origin_id()
+        row.setdefault("hidden_in_excel", 0)
+        row.setdefault("created_at", now)
+        row.setdefault("updated_at", now)
         cur.execute(sql, row)
         n += cur.rowcount
     conn.commit()
@@ -461,24 +546,45 @@ def sync_transactions_by_row_hash(
     *,
     payment_method: str,
     rows: Iterable[dict],
-    delete_missing: bool = True,
+    delete_missing: bool = False,
+    user_fields_only: bool = False,
 ) -> SyncResult:
     """
-    Excel-master style sync:
-    - Upserts rows by `row_hash` overwriting DB fields with the provided values.
-    - Optionally deletes DB rows for `payment_method` that are not present in `rows`.
+    Excel-master style sync.
+
+    Match priority:
+      1. ``origin_id`` — stable UUID, survives description/hash changes.
+      2. ``row_hash``  — backward compat fallback.
+
+    ``user_fields_only=True``
+        Only writes user-editable fields (description, category, subcategory,
+        person, notes, reimbursable) — never overwrites source data (amounts,
+        dates, source_file) that came from a CSV import.  Use for credit-card
+        rows where the CSV is the authoritative source.
+
+    ``delete_missing``
+        When True, rows in the DB for this ``payment_method`` that are not in
+        ``rows`` are **soft-deleted** (``hidden_in_excel = 1``) rather than
+        physically removed.  Hard deletes no longer happen here to prevent
+        accidentally wiping CSV-imported data by uploading an incomplete
+        spreadsheet.
     """
     now = now_iso()
 
-    # Materialize rows (we need hashes for delete step).
+    # Materialise and track both identity keys.
     materialized: list[dict] = []
-    hashes: list[str] = []
+    origin_ids_seen: list[str] = []
+    hashes_seen: list[str] = []
+
     for r in rows:
         rh = str(r.get("row_hash") or "").strip()
         if not rh:
             continue
         materialized.append(r)
-        hashes.append(rh)
+        hashes_seen.append(rh)
+        oid = str(r.get("origin_id") or "").strip()
+        if oid:
+            origin_ids_seen.append(oid)
 
     inserted = 0
     updated = 0
@@ -486,28 +592,32 @@ def sync_transactions_by_row_hash(
 
     insert_sql = """
     INSERT INTO transactions(
-        row_hash, txn_date, cash_date, amount, description,
+        origin_id, row_hash, txn_date, cash_date, amount, description,
         group_name, category, subcategory,
         payment_method, account, source,
         statement_closing_date, statement_due_date,
         person, reimbursable, reference, notes,
         source_file, source_hash, external_id,
+        hidden_in_excel,
         created_at, updated_at
     )
     VALUES(
-        :row_hash, :txn_date, :cash_date, :amount, :description,
+        :origin_id, :row_hash, :txn_date, :cash_date, :amount, :description,
         :group_name, :category, :subcategory,
         :payment_method, :account, :source,
         :statement_closing_date, :statement_due_date,
         :person, :reimbursable, :reference, :notes,
         :source_file, :source_hash, :external_id,
+        0,
         :created_at, :updated_at
     )
     """
 
-    update_sql = """
+    # Full update (debit / income / household — user is the source of truth).
+    full_update_sql = """
     UPDATE transactions
     SET
+        row_hash = :row_hash,
         txn_date = :txn_date,
         cash_date = :cash_date,
         amount = :amount,
@@ -527,8 +637,9 @@ def sync_transactions_by_row_hash(
         source_file = :source_file,
         source_hash = :source_hash,
         external_id = :external_id,
+        hidden_in_excel = 0,
         updated_at = :updated_at
-    WHERE row_hash = :row_hash
+    WHERE id = :_match_id
     """
 
     for row in materialized:
@@ -536,38 +647,273 @@ def sync_transactions_by_row_hash(
         row["payment_method"] = str(row.get("payment_method") or payment_method)
         row["updated_at"] = now
 
-        existing = cur.execute("SELECT created_at FROM transactions WHERE row_hash = ? LIMIT 1", (row["row_hash"],)).fetchone()
-        if existing is None:
-            row["created_at"] = row.get("created_at") or now
-            cur.execute(insert_sql, row)
-            inserted += cur.rowcount
-        else:
-            cur.execute(update_sql, row)
-            updated += cur.rowcount
+        # ── Try match by origin_id first ────────────────────────────────
+        match_id: int | None = None
+        origin_id_incoming = str(row.get("origin_id") or "").strip()
+        if origin_id_incoming:
+            existing = cur.execute(
+                "SELECT id FROM transactions WHERE origin_id = ? LIMIT 1",
+                (origin_id_incoming,),
+            ).fetchone()
+            if existing is not None:
+                match_id = int(existing["id"])
 
-    deleted = 0
-    if delete_missing:
-        if hashes:
-            placeholders = ", ".join(["?"] * len(hashes))
-            deleted = cur.execute(
-                f"DELETE FROM transactions WHERE payment_method = ? AND row_hash NOT IN ({placeholders})",
-                [payment_method] + hashes,
+        # ── Fallback: match by row_hash ──────────────────────────────────
+        if match_id is None:
+            existing = cur.execute(
+                "SELECT id FROM transactions WHERE row_hash = ? LIMIT 1",
+                (row["row_hash"],),
+            ).fetchone()
+            if existing is not None:
+                match_id = int(existing["id"])
+
+        if match_id is not None:
+            if user_fields_only:
+                # Only touch user-editable fields; never clobber CSV-origin data.
+                _update_user_fields(conn, transaction_id=match_id, row=row, now=now)
+                # Ensure row is visible in Excel again if it was hidden.
+                cur.execute(
+                    "UPDATE transactions SET hidden_in_excel = 0, updated_at = ? WHERE id = ?",
+                    (now, match_id),
+                )
+            else:
+                row["_match_id"] = match_id
+                cur.execute(full_update_sql, row)
+            updated += 1
+        else:
+            # Brand-new row.
+            if not row.get("origin_id"):
+                row["origin_id"] = new_origin_id()
+            row.setdefault("created_at", now)
+            row["hidden_in_excel"] = 0
+            try:
+                cur.execute(insert_sql, row)
+                inserted += cur.rowcount
+            except sqlite3.IntegrityError:
+                pass  # race or true duplicate — skip silently
+
+    # ── Soft-hide rows that are no longer present in the sheet ──────────
+    hidden = 0
+    if delete_missing and (hashes_seen or origin_ids_seen):
+        # Build the NOT-IN exclusion using origin_ids where available.
+        if origin_ids_seen:
+            oid_placeholders = ", ".join(["?"] * len(origin_ids_seen))
+            hash_placeholders = ", ".join(["?"] * len(hashes_seen))
+            hidden = cur.execute(
+                f"""
+                UPDATE transactions
+                SET hidden_in_excel = 1, updated_at = ?
+                WHERE payment_method = ?
+                  AND hidden_in_excel = 0
+                  AND (origin_id IS NULL OR origin_id NOT IN ({oid_placeholders}))
+                  AND row_hash NOT IN ({hash_placeholders})
+                """,
+                [now, payment_method] + origin_ids_seen + hashes_seen,
             ).rowcount
         else:
-            deleted = cur.execute("DELETE FROM transactions WHERE payment_method = ?", (payment_method,)).rowcount
+            hash_placeholders = ", ".join(["?"] * len(hashes_seen))
+            hidden = cur.execute(
+                f"""
+                UPDATE transactions
+                SET hidden_in_excel = 1, updated_at = ?
+                WHERE payment_method = ?
+                  AND hidden_in_excel = 0
+                  AND row_hash NOT IN ({hash_placeholders})
+                """,
+                [now, payment_method] + hashes_seen,
+            ).rowcount
 
     conn.commit()
-    return SyncResult(inserted=int(inserted), updated=int(updated), deleted=int(deleted))
+    # ``deleted`` field repurposed to mean "soft-hidden" for callers that display it.
+    return SyncResult(inserted=int(inserted), updated=int(updated), deleted=int(hidden))
+
+
+def _update_user_fields(
+    conn: sqlite3.Connection,
+    *,
+    transaction_id: int,
+    row: dict,
+    now: str,
+) -> None:
+    """
+    Updates only the user-editable fields for an existing transaction.
+    Preserves source-origin data (amount, txn_date, source_file, etc.).
+    Always overwrites with whatever is in ``row`` so Excel edits take
+    effect (caller decides what counts as user-editable).
+    """
+    fields: dict[str, object] = {}
+    for key in ("description", "category", "subcategory", "person", "notes", "reimbursable", "reference"):
+        val = row.get(key)
+        if val is not None:
+            fields[key] = val
+    if not fields:
+        return
+    sets = ", ".join([f"{k} = ?" for k in fields])
+    params = list(fields.values()) + [now, transaction_id]
+    conn.execute(f"UPDATE transactions SET {sets}, updated_at = ? WHERE id = ?", params)
+
+
+# ── Pending Review ───────────────────────────────────────────────────────────
+
+def add_pending_review(
+    conn: sqlite3.Connection,
+    *,
+    incoming: dict,
+    candidate_ids: list[int],
+    match_type: str,
+) -> int:
+    """
+    Inserts an ambiguous incoming row into the review queue and returns its ID.
+    ``incoming`` is the raw transaction dict from the importer (internal _ keys
+    are stripped).  ``candidate_ids`` are the existing transaction IDs in the DB
+    that partially matched.
+    """
+    clean = {k: v for k, v in incoming.items() if not str(k).startswith("_")}
+    now = now_iso()
+    cur = conn.execute(
+        """
+        INSERT INTO pending_review(incoming_json, candidate_ids, source_file, match_type, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            json.dumps(clean, default=str),
+            json.dumps(candidate_ids),
+            str(clean.get("source_file") or ""),
+            str(match_type),
+            now,
+        ),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def count_pending_reviews(conn: sqlite3.Connection) -> int:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM pending_review WHERE resolved_at IS NULL"
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+def get_pending_reviews(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT id, incoming_json, candidate_ids, source_file, match_type, created_at
+        FROM pending_review
+        WHERE resolved_at IS NULL
+        ORDER BY created_at DESC
+        """
+    ).fetchall()
+    out: list[dict] = []
+    for r in rows:
+        item = dict(r)
+        try:
+            item["incoming"] = json.loads(item.pop("incoming_json"))
+        except Exception:  # noqa: BLE001
+            item["incoming"] = {}
+        try:
+            item["candidate_ids"] = json.loads(item.get("candidate_ids") or "[]")
+        except Exception:  # noqa: BLE001
+            item["candidate_ids"] = []
+        out.append(item)
+    return out
+
+
+def resolve_pending_review(
+    conn: sqlite3.Connection,
+    *,
+    review_id: int,
+    resolution: str,
+    merge_into_id: int | None = None,
+) -> None:
+    """
+    Resolves a pending review item.
+
+    ``resolution`` must be one of:
+    - ``"merge"``       — merge incoming into ``merge_into_id`` (keep user edits).
+    - ``"create_new"``  — insert the incoming row as a brand-new transaction.
+    - ``"skip"``        — discard the incoming row; do nothing.
+    """
+    now = now_iso()
+
+    if resolution not in ("merge", "create_new", "skip"):
+        raise ValueError(f"Invalid resolution: {resolution!r}")
+
+    if resolution == "merge" and merge_into_id is not None:
+        row_data_r = conn.execute(
+            "SELECT incoming_json FROM pending_review WHERE id = ?",
+            (int(review_id),),
+        ).fetchone()
+        if row_data_r:
+            try:
+                incoming = json.loads(row_data_r["incoming_json"])
+            except Exception:  # noqa: BLE001
+                incoming = {}
+            if incoming:
+                _update_user_fields(conn, transaction_id=merge_into_id, row=incoming, now=now)
+                # Also update source fields from the incoming CSV row.
+                src_fields = {
+                    k: incoming[k]
+                    for k in ("source_file", "source_hash", "external_id", "row_hash")
+                    if incoming.get(k)
+                }
+                if src_fields:
+                    sets = ", ".join([f"{k} = ?" for k in src_fields])
+                    params = list(src_fields.values()) + [now, merge_into_id]
+                    conn.execute(f"UPDATE transactions SET {sets}, updated_at = ? WHERE id = ?", params)
+
+    elif resolution == "create_new":
+        row_data_r = conn.execute(
+            "SELECT incoming_json FROM pending_review WHERE id = ?",
+            (int(review_id),),
+        ).fetchone()
+        if row_data_r:
+            try:
+                incoming = json.loads(row_data_r["incoming_json"])
+            except Exception:  # noqa: BLE001
+                incoming = {}
+            if incoming:
+                incoming["origin_id"] = new_origin_id()
+                incoming.setdefault("created_at", now)
+                incoming["updated_at"] = now
+                incoming.setdefault("hidden_in_excel", 0)
+                try:
+                    cols = [
+                        "origin_id", "row_hash", "txn_date", "cash_date", "amount", "description",
+                        "group_name", "category", "subcategory", "payment_method", "account", "source",
+                        "statement_closing_date", "statement_due_date", "person", "reimbursable",
+                        "reference", "notes", "source_file", "source_hash", "external_id",
+                        "hidden_in_excel", "created_at", "updated_at",
+                    ]
+                    placeholders = ", ".join([f":{c}" for c in cols])
+                    conn.execute(
+                        f"INSERT OR IGNORE INTO transactions({', '.join(cols)}) VALUES ({placeholders})",
+                        incoming,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+    conn.execute(
+        "UPDATE pending_review SET resolved_at = ?, resolution = ? WHERE id = ?",
+        (now, resolution, int(review_id)),
+    )
+    conn.commit()
 
 
 def upsert_credit_card_transactions(conn: sqlite3.Connection, rows: Iterable[dict]) -> int:
     """
     Upserts credit-card rows with extra dedupe/migration support.
 
-    - Inserts new rows by `row_hash`.
-    - If a row already exists (same `row_hash`), updates non-user fields (cash_date, statement dates, etc.)
-      and fills empty category fields (never overwrites existing categories).
-    - If a legacy row_hash (older importer) exists, migrates it to the new hash and updates fields.
+    - Inserts new rows by ``row_hash``.
+    - If a row already exists (same ``row_hash``), updates non-user fields
+      (cash_date, statement dates, etc.) and fills empty category fields
+      (never overwrites existing categories).
+    - If a legacy row_hash (older importer) exists, migrates it to the new hash
+      and updates fields.
+    - When a new CSV row has no match but looks like a manually-entered row
+      (same date + abs(amount) + account, different source), it is added to
+      ``pending_review`` instead of inserting a duplicate.
+    - All inserted rows receive an ``origin_id`` UUID if they don't already
+      have one.
     """
 
     def _strip_internal(row: dict) -> dict:
@@ -628,6 +974,8 @@ def upsert_credit_card_transactions(conn: sqlite3.Connection, rows: Iterable[dic
             "source_file": row_clean.get("source_file"),
             "source_hash": row_clean.get("source_hash"),
             "external_id": row_clean.get("external_id"),
+            # If a row appears again in a CSV import, it must be visible.
+            "hidden_in_excel": 0,
             "updated_at": now,
         }
 
@@ -660,21 +1008,23 @@ def upsert_credit_card_transactions(conn: sqlite3.Connection, rows: Iterable[dic
 
     insert_sql = """
     INSERT OR IGNORE INTO transactions(
-        row_hash, txn_date, cash_date, amount, description,
+        origin_id, row_hash, txn_date, cash_date, amount, description,
         group_name, category, subcategory,
         payment_method, account, source,
         statement_closing_date, statement_due_date,
         person, reimbursable, reference, notes,
         source_file, source_hash, external_id,
+        hidden_in_excel,
         created_at, updated_at
     )
     VALUES(
-        :row_hash, :txn_date, :cash_date, :amount, :description,
+        :origin_id, :row_hash, :txn_date, :cash_date, :amount, :description,
         :group_name, :category, :subcategory,
         :payment_method, :account, :source,
         :statement_closing_date, :statement_due_date,
         :person, :reimbursable, :reference, :notes,
         :source_file, :source_hash, :external_id,
+        0,
         :created_at, :updated_at
     )
     """
@@ -867,7 +1217,45 @@ def upsert_credit_card_transactions(conn: sqlite3.Connection, rows: Iterable[dic
                 _update_from_row(transaction_id=int(stable_match["id"]), row_clean=row_clean)
                 continue
 
-        # Brand-new row.
+        # ── Manual-entry duplicate check ─────────────────────────────────────
+        # If there's a row from a manual/Excel source with the same (date, amount,
+        # account), it's probably the same transaction entered by hand before the
+        # CSV was imported.  When there's exactly one candidate we route to
+        # pending_review so the user can decide; when there are many candidates
+        # (e.g. repeated small purchases) we just insert.
+        txn_date2 = row_clean.get("txn_date")
+        amount2 = row_clean.get("amount")
+        account2 = row_clean.get("account")
+        source_file2 = row_clean.get("source_file")
+        if txn_date2 and amount2 is not None:
+            amount_f2 = float(amount2)
+            manual_candidates = conn.execute(
+                """
+                SELECT id FROM transactions
+                WHERE payment_method = 'credit_card'
+                  AND txn_date = ?
+                  AND ABS(amount - ?) < 0.01
+                  AND (account = ? OR ? IS NULL)
+                  AND source IN ('excel_credit_card', 'excel_manual', 'manual')
+                  AND COALESCE(source_file, '') <> COALESCE(?, '')
+                LIMIT 2
+                """,
+                (txn_date2, amount_f2, account2, account2, source_file2 or ""),
+            ).fetchall()
+            if len(manual_candidates) == 1:
+                add_pending_review(
+                    conn,
+                    incoming=row_clean,
+                    candidate_ids=[int(manual_candidates[0]["id"])],
+                    match_type="manual_vs_csv",
+                )
+                continue  # don't insert yet; user decides
+
+        # Brand-new row — assign a stable origin_id.
+        row_clean["origin_id"] = new_origin_id()
+        row_clean["hidden_in_excel"] = 0
+        row_clean.setdefault("created_at", now_iso())
+        row_clean["updated_at"] = now_iso()
         cur.execute(insert_sql, row_clean)
         inserted += cur.rowcount
 
@@ -954,6 +1342,7 @@ def bulk_update_categories_by_row_hash(
 ) -> tuple[int, int]:
     """
     Updates many rows identified by `row_hash`.
+    Supports: description, category, subcategory, person, reimbursable.
     Returns `(updated_count, missing_count)`.
     """
     cur = conn.cursor()
@@ -973,10 +1362,13 @@ def bulk_update_categories_by_row_hash(
 
         category = u.get("category")
         subcategory = u.get("subcategory")
+        description = u.get("description")
         person = u.get("person")
         reimbursable = u.get("reimbursable")
 
         fields: dict[str, object] = {}
+        if "description" in u:
+            fields["description"] = str(description or "").strip()
         if allow_clear or (category is not None and str(category).strip() != ""):
             fields["category"] = (str(category).strip() or None) if category is not None else None
         if allow_clear or (subcategory is not None and str(subcategory).strip() != ""):
@@ -1088,25 +1480,34 @@ def upsert_from_excel(
 
     for row in rows:
         rh = str(row.get("row_hash") or "").strip()
-        if not rh:
+        origin_id = str(row.get("origin_id") or "").strip()
+
+        if not rh and not origin_id:
             skipped += 1
             continue
 
-        # Check if exists
-        existing = cur.execute(
-            "SELECT id, category, subcategory, person, reimbursable FROM transactions WHERE row_hash = ? LIMIT 1",
-            (rh,)
-        ).fetchone()
+        # ── Find existing row: prefer origin_id, fall back to row_hash ──
+        existing = None
+        if origin_id:
+            existing = cur.execute(
+                "SELECT id, category, subcategory, person, reimbursable FROM transactions WHERE origin_id = ? LIMIT 1",
+                (origin_id,),
+            ).fetchone()
+        if existing is None and rh:
+            existing = cur.execute(
+                "SELECT id, category, subcategory, person, reimbursable FROM transactions WHERE row_hash = ? LIMIT 1",
+                (rh,),
+            ).fetchone()
 
         if existing is not None:
             # Update existing row with category/subcategory/person/reimbursable
             fields: dict[str, object] = {}
-            
+
             category = row.get("category")
             subcategory = row.get("subcategory")
             person = row.get("person")
             reimbursable = row.get("reimbursable")
-            
+
             # Only update if value is provided in Excel
             if category is not None and str(category).strip():
                 fields["category"] = str(category).strip()
@@ -1121,23 +1522,24 @@ def upsert_from_excel(
                 sets = ", ".join([f"{k} = ?" for k in fields.keys()])
                 params = list(fields.values()) + [now, int(existing["id"])]
                 cur.execute(f"UPDATE transactions SET {sets}, updated_at = ? WHERE id = ?", params)
-            
+
             updated += 1
         else:
             # Insert new row
             txn_date = row.get("txn_date")
             amount = row.get("amount")
             description = row.get("description")
-            
+
             # Require minimal data for new rows
             if not txn_date or amount is None or not description:
                 skipped += 1
                 continue
 
             cash_date = row.get("statement_due_date") or txn_date
-            
+
             insert_row = {
-                "row_hash": rh,
+                "origin_id": new_origin_id(),
+                "row_hash": rh or sha256_text(f"excel_manual|{txn_date}|{float(amount):.2f}|{description}"),
                 "txn_date": txn_date,
                 "cash_date": cash_date,
                 "amount": float(amount),
@@ -1157,32 +1559,35 @@ def upsert_from_excel(
                 "source_file": "manual_excel",
                 "source_hash": None,
                 "external_id": None,
+                "hidden_in_excel": 0,
                 "created_at": now,
                 "updated_at": now,
             }
 
             cur.execute(
                 """
-                INSERT INTO transactions(
-                    row_hash, txn_date, cash_date, amount, description,
+                INSERT OR IGNORE INTO transactions(
+                    origin_id, row_hash, txn_date, cash_date, amount, description,
                     group_name, category, subcategory,
                     payment_method, account, source,
                     statement_closing_date, statement_due_date,
                     person, reimbursable, reference, notes,
                     source_file, source_hash, external_id,
+                    hidden_in_excel,
                     created_at, updated_at
                 )
                 VALUES(
-                    :row_hash, :txn_date, :cash_date, :amount, :description,
+                    :origin_id, :row_hash, :txn_date, :cash_date, :amount, :description,
                     :group_name, :category, :subcategory,
                     :payment_method, :account, :source,
                     :statement_closing_date, :statement_due_date,
                     :person, :reimbursable, :reference, :notes,
                     :source_file, :source_hash, :external_id,
+                    :hidden_in_excel,
                     :created_at, :updated_at
                 )
                 """,
-                insert_row
+                insert_row,
             )
             inserted += 1
 

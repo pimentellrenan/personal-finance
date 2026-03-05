@@ -9,6 +9,7 @@ import pandas as pd
 def load_transactions_df(conn, *, start: date | None = None, end: date | None = None) -> pd.DataFrame:
     where = []
     params: list[Any] = []
+    where.append("COALESCE(hidden_in_excel, 0) = 0")
     if start is not None:
         where.append("cash_date >= ?")
         params.append(start.isoformat())
@@ -28,6 +29,7 @@ def load_transactions_df(conn, *, start: date | None = None, end: date | None = 
 def load_transactions_df_by_txn_date(conn, *, start: date | None = None, end: date | None = None) -> pd.DataFrame:
     where = []
     params: list[Any] = []
+    where.append("COALESCE(hidden_in_excel, 0) = 0")
     if start is not None:
         where.append("txn_date >= ?")
         params.append(start.isoformat())

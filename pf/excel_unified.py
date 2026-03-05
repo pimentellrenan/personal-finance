@@ -16,7 +16,7 @@ from typing import Any, Iterable
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.worksheet.datavalidation import DataValidation, DataValidationList
 from openpyxl.workbook.defined_name import DefinedName
 
 from pf.utils import normalize_str, parse_date, parse_brl_number
@@ -341,11 +341,13 @@ def build_unified_template_bytes(
         "Status",               # K
         "Notas",                # L
         "__chave (oculto)",     # M - hidden, for INDIRECT
+        "Origin ID (oculto)",   # N - hidden, stable UUID
     ]
     ws_cartao.append(cartao_headers)
     ws_cartao.freeze_panes = "A2"
     ws_cartao.column_dimensions["A"].hidden = True
     ws_cartao.column_dimensions["M"].hidden = True
+    ws_cartao.column_dimensions["N"].hidden = True
     
     # Data validations para Cartão
     dv_cat = DataValidation(type="list", formula1="=Categorias", allow_blank=True)
@@ -374,7 +376,7 @@ def build_unified_template_bytes(
         ws_cartao.cell(row=r, column=13, value=f'=IFERROR(VLOOKUP($D{r},Listas!$A$1:$B${lookup_end},2,FALSE),"")')
     
     # Larguras
-    for idx, w in enumerate([12, 14, 14, 25, 25, 18, 45, 14, 12, 12, 12, 30, 10], start=1):
+    for idx, w in enumerate([12, 14, 14, 25, 25, 18, 45, 14, 12, 12, 12, 30, 10, 10], start=1):
         ws_cartao.column_dimensions[get_column_letter(idx)].width = w
     
     # ========================================================================
@@ -390,10 +392,14 @@ def build_unified_template_bytes(
         "Reembolsável",         # G
         "Notas",                # H
         "__chave (oculto)",     # I - hidden
+        "Hash (oculto)",        # J - hidden
+        "Origin ID (oculto)",   # K - hidden, stable UUID
     ]
     ws_debitos.append(debito_headers)
     ws_debitos.freeze_panes = "A2"
     ws_debitos.column_dimensions["I"].hidden = True
+    ws_debitos.column_dimensions["J"].hidden = True
+    ws_debitos.column_dimensions["K"].hidden = True
     
     dv_cat_d = DataValidation(type="list", formula1="=Categorias", allow_blank=True)
     dv_sub_d = DataValidation(type="list", formula1="=INDIRECT($I2)", allow_blank=True)
@@ -413,7 +419,7 @@ def build_unified_template_bytes(
         lookup_end = max(1, len(categories))
         ws_debitos.cell(row=r, column=9, value=f'=IFERROR(VLOOKUP($B{r},Listas!$A$1:$B${lookup_end},2,FALSE),"")')
     
-    for idx, w in enumerate([14, 25, 25, 45, 14, 12, 12, 30, 10], start=1):
+    for idx, w in enumerate([14, 25, 25, 45, 14, 12, 12, 30, 10, 10, 10], start=1):
         ws_debitos.column_dimensions[get_column_letter(idx)].width = w
     
     # ========================================================================
@@ -425,9 +431,13 @@ def build_unified_template_bytes(
         "Descrição",            # C
         "Valor (R$)",           # D
         "Notas",                # E
+        "Hash (oculto)",        # F - hidden
+        "Origin ID (oculto)",   # G - hidden, stable UUID
     ]
     ws_receitas.append(receita_headers)
     ws_receitas.freeze_panes = "A2"
+    ws_receitas.column_dimensions["F"].hidden = True
+    ws_receitas.column_dimensions["G"].hidden = True
     
     dv_cat_r = DataValidation(type="list", formula1="=CategoriasReceita", allow_blank=True) if income_cats else None
     
@@ -438,7 +448,7 @@ def build_unified_template_bytes(
         if dv_cat_r:
             dv_cat_r.add(f"B{r}")
     
-    for idx, w in enumerate([14, 25, 45, 14, 30], start=1):
+    for idx, w in enumerate([14, 25, 45, 14, 30, 10, 10], start=1):
         ws_receitas.column_dimensions[get_column_letter(idx)].width = w
     
     # ========================================================================
@@ -456,6 +466,8 @@ def build_unified_template_bytes(
         "Data Pagamento",       # G - data que define em qual acerto entra
         "Notas",                # H
         "__chave_categoria (oculto)",  # I - Para fórmula VLOOKUP
+        "Hash (oculto)",        # J - hidden
+        "Origin ID (oculto)",   # K - hidden, stable UUID
     ]
     ws_contas.append(contas_headers)
     ws_contas.freeze_panes = "A2"
@@ -477,14 +489,152 @@ def build_unified_template_bytes(
         ws_contas.cell(row=r, column=9, value=f'=IFERROR(VLOOKUP($B{r},Listas!$A$1:$B${lookup_end},2,FALSE),"")')
     
     ws_contas.column_dimensions["I"].hidden = True
-    
-    for idx, w in enumerate([14, 28, 28, 35, 14, 14, 14, 20, 10], start=1):
+    ws_contas.column_dimensions["J"].hidden = True
+    ws_contas.column_dimensions["K"].hidden = True
+
+    for idx, w in enumerate([14, 28, 28, 35, 14, 14, 14, 20, 10, 10, 10], start=1):
         ws_contas.column_dimensions[get_column_letter(idx)].width = w
     
     # Salvar
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def _clear_data_validations(ws) -> None:
+    # Reset validations to avoid duplicated/fragmented rules after many appends.
+    ws.data_validations = DataValidationList()
+
+
+def _has_validation(ws, coord: str) -> bool:
+    if ws is None or ws.data_validations is None:
+        return False
+    for dv in getattr(ws.data_validations, "dataValidation", []) or []:
+        try:
+            if coord in dv:
+                return True
+        except Exception:  # noqa: BLE001
+            pass
+    return False
+
+
+def _compact_sheet_rows(
+    ws,
+    *,
+    key_cols: tuple[int, ...],
+    max_col: int,
+) -> bool:
+    """
+    Compacts a sheet by removing blank rows between data rows.
+    A row is considered "data" when any `key_cols` cell is filled.
+    Returns True when compaction changed the sheet.
+    Preserves cell number_format so dates stay formatted.
+    """
+    if ws is None:
+        return False
+
+    used_rows: list[int] = []
+    kept_data: list[list[tuple[object, str | None]]] = []  # (value, number_format)
+    for r in range(2, int(ws.max_row) + 1):
+        has_data = any(ws.cell(row=r, column=c).value not in (None, "") for c in key_cols)
+        if not has_data:
+            continue
+        used_rows.append(r)
+        row_data: list[tuple[object, str | None]] = []
+        for c in range(1, int(max_col) + 1):
+            cell = ws.cell(row=r, column=c)
+            nf = cell.number_format if cell.number_format != "General" else None
+            row_data.append((cell.value, nf))
+        kept_data.append(row_data)
+
+    contiguous_rows = used_rows == list(range(2, 2 + len(used_rows)))
+    # Only compact when there are holes between data rows.
+    # Trailing rows are expected because we keep validation ranges pre-allocated.
+    if contiguous_rows:
+        return False
+
+    # Remove all body rows and rewrite only real data rows contiguously.
+    body_rows = max(0, int(ws.max_row) - 1)
+    if body_rows:
+        ws.delete_rows(2, body_rows)
+
+    for idx, row_values in enumerate(kept_data, start=2):
+        for c, (v, nf) in enumerate(row_values, start=1):
+            cell = ws.cell(row=idx, column=c, value=v)
+            if nf:
+                cell.number_format = nf
+
+    return True
+
+
+def _apply_cartao_validations(ws, *, categories_count: int, end_row: int) -> None:
+    _clear_data_validations(ws)
+    dv_cat = DataValidation(type="list", formula1="=Categorias", allow_blank=True)
+    dv_sub = DataValidation(type="list", formula1="=INDIRECT($M2)", allow_blank=True)
+    dv_card = DataValidation(type="list", formula1="=Cartoes", allow_blank=True)
+    dv_pago_aline = DataValidation(type="list", formula1='"X,"', allow_blank=True)
+    dv_reemb = DataValidation(type="list", formula1='"Sim,Não"', allow_blank=True)
+    dv_status = DataValidation(type="list", formula1='"Pago,Em aberto"', allow_blank=True)
+    ws.add_data_validation(dv_cat)
+    ws.add_data_validation(dv_sub)
+    ws.add_data_validation(dv_card)
+    ws.add_data_validation(dv_pago_aline)
+    ws.add_data_validation(dv_reemb)
+    ws.add_data_validation(dv_status)
+    lookup_end = max(1, int(categories_count))
+    for r in range(2, int(end_row) + 1):
+        dv_cat.add(f"D{r}")
+        dv_sub.add(f"E{r}")
+        dv_card.add(f"F{r}")
+        dv_pago_aline.add(f"I{r}")
+        dv_reemb.add(f"J{r}")
+        dv_status.add(f"K{r}")
+        ws.cell(row=r, column=13, value=f'=IFERROR(VLOOKUP($D{r},Listas!$A$1:$B${lookup_end},2,FALSE),"")')
+
+
+def _apply_debitos_validations(ws, *, categories_count: int, end_row: int) -> None:
+    _clear_data_validations(ws)
+    dv_cat = DataValidation(type="list", formula1="=Categorias", allow_blank=True)
+    dv_sub = DataValidation(type="list", formula1="=INDIRECT($I2)", allow_blank=True)
+    dv_pago_aline = DataValidation(type="list", formula1='"X,"', allow_blank=True)
+    dv_reemb = DataValidation(type="list", formula1='"Sim,Não"', allow_blank=True)
+    ws.add_data_validation(dv_cat)
+    ws.add_data_validation(dv_sub)
+    ws.add_data_validation(dv_pago_aline)
+    ws.add_data_validation(dv_reemb)
+    lookup_end = max(1, int(categories_count))
+    for r in range(2, int(end_row) + 1):
+        dv_cat.add(f"B{r}")
+        dv_sub.add(f"C{r}")
+        dv_pago_aline.add(f"F{r}")
+        dv_reemb.add(f"G{r}")
+        ws.cell(row=r, column=9, value=f'=IFERROR(VLOOKUP($B{r},Listas!$A$1:$B${lookup_end},2,FALSE),"")')
+
+
+def _apply_receitas_validations(ws, *, has_income_categories: bool, end_row: int) -> None:
+    _clear_data_validations(ws)
+    if not has_income_categories:
+        return
+    dv_cat = DataValidation(type="list", formula1="=CategoriasReceita", allow_blank=True)
+    ws.add_data_validation(dv_cat)
+    for r in range(2, int(end_row) + 1):
+        dv_cat.add(f"B{r}")
+
+
+def _apply_contas_validations(ws, *, categories_count: int, end_row: int) -> None:
+    _clear_data_validations(ws)
+    dv_cat = DataValidation(type="list", formula1="=Categorias", allow_blank=True)
+    dv_sub = DataValidation(type="list", formula1="=INDIRECT($I2)", allow_blank=True)
+    dv_pago_aline = DataValidation(type="list", formula1='"X,"', allow_blank=True)
+    ws.add_data_validation(dv_cat)
+    ws.add_data_validation(dv_sub)
+    ws.add_data_validation(dv_pago_aline)
+    lookup_end = max(1, int(categories_count))
+    for r in range(2, int(end_row) + 1):
+        dv_cat.add(f"B{r}")
+        dv_sub.add(f"C{r}")
+        dv_pago_aline.add(f"F{r}")
+        ws.cell(row=r, column=9, value=f'=IFERROR(VLOOKUP($B{r},Listas!$A$1:$B${lookup_end},2,FALSE),"")')
 
 
 # ============================================================================
@@ -508,7 +658,155 @@ def ensure_unified_excel(
                 cards=cards,
             )
         )
+        return path
+
+    # Repair dropdown/data-validation ranges when the workbook grows.
+    # This keeps category/subcategory fields selectable even after many appends.
+    try:
+        wb = load_workbook(path)
+
+        def _sheet(token: str):
+            token_norm = normalize_str(token)
+            for name in wb.sheetnames:
+                nn = normalize_str(name)
+                if nn == token_norm or token_norm in nn:
+                    return wb[name]
+            return None
+
+        ws_cartao = _sheet("cartao")
+        ws_debitos = _sheet("debitos")
+        ws_receitas = _sheet("receitas")
+        ws_contas = _sheet("contas casa")
+        ws_lists = _sheet("listas")
+
+        compacted = False
+        if ws_cartao is not None:
+            # key_cols: hash(1), date(2), card(6), desc(7), amount(8) — excludes optional category/sub
+            compacted = _compact_sheet_rows(ws_cartao, key_cols=(1, 2, 6, 7, 8), max_col=14) or compacted
+        if ws_debitos is not None:
+            # key_cols: date(1), desc(4), amount(5) — excludes optional category/sub
+            compacted = _compact_sheet_rows(ws_debitos, key_cols=(1, 4, 5), max_col=11) or compacted
+        if ws_receitas is not None:
+            # key_cols: date(1), desc(3), amount(4) — excludes optional category
+            compacted = _compact_sheet_rows(ws_receitas, key_cols=(1, 3, 4), max_col=7) or compacted
+        if ws_contas is not None:
+            # key_cols: ref_month(1), desc(4), amount(5), pay_date(7) — excludes optional category/sub
+            compacted = _compact_sheet_rows(ws_contas, key_cols=(1, 4, 5, 7), max_col=11) or compacted
+
+        # Use the last real data row (not worksheet max_row, which can be inflated by formulas)
+        # to keep validation ranges stable and avoid growing +200 on every app run.
+        row_cartao = _last_used_row(ws_cartao, key_cols=(1, 2, 6, 7, 8)) if ws_cartao is not None else 1
+        row_debitos = _last_used_row(ws_debitos, key_cols=(1, 4, 5)) if ws_debitos is not None else 1
+        row_receitas = _last_used_row(ws_receitas, key_cols=(1, 3, 4)) if ws_receitas is not None else 1
+        row_contas = _last_used_row(ws_contas, key_cols=(1, 4, 5, 7)) if ws_contas is not None else 1
+        active_max_row = max(row_cartao, row_debitos, row_receitas, row_contas)
+        target_end = min(12000, max(5000, int(active_max_row) + 200))
+
+        repaired_until = 0
+        if ws_lists is not None:
+            try:
+                repaired_until = int(ws_lists["ZZ1"].value or 0)
+            except Exception:  # noqa: BLE001
+                repaired_until = 0
+
+        needs_repair = compacted
+        if ws_cartao is not None:
+            needs_repair = needs_repair or (not _has_validation(ws_cartao, "D2")) or (not _has_validation(ws_cartao, "E2"))
+            needs_repair = needs_repair or (not bool(ws_cartao.column_dimensions["A"].hidden))
+            needs_repair = needs_repair or (not bool(ws_cartao.column_dimensions["M"].hidden))
+            needs_repair = needs_repair or (not bool(ws_cartao.column_dimensions["N"].hidden))
+        if ws_debitos is not None:
+            needs_repair = needs_repair or (not _has_validation(ws_debitos, "B2")) or (not _has_validation(ws_debitos, "C2"))
+            needs_repair = needs_repair or (not bool(ws_debitos.column_dimensions["I"].hidden))
+            needs_repair = needs_repair or (not bool(ws_debitos.column_dimensions["J"].hidden))
+            needs_repair = needs_repair or (not bool(ws_debitos.column_dimensions["K"].hidden))
+        if ws_receitas is not None:
+            needs_repair = needs_repair or (not bool(ws_receitas.column_dimensions["F"].hidden))
+            needs_repair = needs_repair or (not bool(ws_receitas.column_dimensions["G"].hidden))
+        if ws_contas is not None:
+            needs_repair = needs_repair or (not _has_validation(ws_contas, "B2")) or (not _has_validation(ws_contas, "C2"))
+            needs_repair = needs_repair or (not bool(ws_contas.column_dimensions["I"].hidden))
+            needs_repair = needs_repair or (not bool(ws_contas.column_dimensions["J"].hidden))
+            needs_repair = needs_repair or (not bool(ws_contas.column_dimensions["K"].hidden))
+
+        if target_end > repaired_until or needs_repair:
+            categories, _, _ = _expense_categories(expense_categories_tree)
+            income_cats = _income_categories(income_categories_tree)
+            repair_end = target_end
+
+            if ws_cartao is not None:
+                _apply_cartao_validations(ws_cartao, categories_count=len(categories), end_row=repair_end)
+                ws_cartao.column_dimensions["A"].hidden = True
+                ws_cartao.column_dimensions["M"].hidden = True
+                ws_cartao.column_dimensions["N"].hidden = True
+            if ws_debitos is not None:
+                _apply_debitos_validations(ws_debitos, categories_count=len(categories), end_row=repair_end)
+                ws_debitos.column_dimensions["I"].hidden = True
+                ws_debitos.column_dimensions["J"].hidden = True
+                ws_debitos.column_dimensions["K"].hidden = True
+            if ws_receitas is not None:
+                _apply_receitas_validations(
+                    ws_receitas,
+                    has_income_categories=bool(income_cats),
+                    end_row=repair_end,
+                )
+                ws_receitas.column_dimensions["F"].hidden = True
+                ws_receitas.column_dimensions["G"].hidden = True
+            if ws_contas is not None:
+                _apply_contas_validations(ws_contas, categories_count=len(categories), end_row=repair_end)
+                ws_contas.column_dimensions["I"].hidden = True
+                ws_contas.column_dimensions["J"].hidden = True
+                ws_contas.column_dimensions["K"].hidden = True
+            if ws_lists is not None:
+                ws_lists["ZZ1"] = repair_end
+            wb.save(path)
+    except Exception:  # noqa: BLE001
+        # Never block the app if the workbook is open/locked by Excel.
+        pass
     return path
+
+
+def get_clean_download_bytes(path: Path) -> bytes:
+    """
+    Carrega o workbook, remove AutoFilter de todas as abas e retorna os bytes
+    prontos para download — sem nenhum filtro pré-definido.
+    """
+    if not path.exists():
+        return b""
+    try:
+        wb = load_workbook(path)
+        for ws in wb.worksheets:
+            # Remove filtros
+            if ws.auto_filter and ws.auto_filter.ref:
+                ws.auto_filter.ref = None
+            # Reset scroll/seleção para A1
+            ws.sheet_view.topLeftCell = "A1"
+            if ws.sheet_view.selection:
+                for sel in ws.sheet_view.selection:
+                    sel.activeCell = "A1"
+                    sel.sqref = "A1"
+            # Garantir formato de data nas colunas de data
+            _fix_date_formats(ws)
+        buf = io.BytesIO()
+        wb.save(buf)
+        return buf.getvalue()
+    except Exception:  # noqa: BLE001
+        try:
+            return path.read_bytes()
+        except Exception:  # noqa: BLE001
+            return b""
+
+
+def _fix_date_formats(ws) -> None:
+    """Aplica formato DD/MM/YYYY em colunas de data que contêm datetime."""
+    from datetime import datetime as _dt, date as _date
+    _DATE_FMT = "DD/MM/YYYY"
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
+        for cell in row:
+            if isinstance(cell.value, (_dt, _date)) and (
+                cell.number_format in ("General", "general", None, "")
+            ):
+                cell.number_format = _DATE_FMT
 
 
 # ============================================================================
@@ -534,6 +832,8 @@ def append_credit_card_rows(
         cards=cards,
     )
     
+    categories, _, _ = _expense_categories(expense_categories_tree)
+
     wb = load_workbook(path)
     ws = wb["Cartão"] if "Cartão" in wb.sheetnames else wb.sheetnames[0]
     
@@ -556,15 +856,21 @@ def append_credit_card_rows(
     reemb_col = _find_col(headers, ("reembolsavel", "reembolsável")) or 10
     status_col = _find_col(headers, ("status",)) or 11
     notes_col = _find_col(headers, ("notas",)) or 12
-    
-    # Existing hashes
-    existing: set[str] = set()
+    origin_id_col = _find_col(headers, ("origin id (oculto)", "origin_id"))
+
+    # Existing hashes and origin_ids — used for deduplication
+    existing_hashes: set[str] = set()
+    existing_origin_ids: set[str] = set()
     last_row = 1
     for r in range(2, ws.max_row + 1):
         rh = str(ws.cell(row=r, column=hash_col).value or "").strip()
         if rh:
-            existing.add(rh)
+            existing_hashes.add(rh)
             last_row = r
+            if origin_id_col:
+                oid = str(ws.cell(row=r, column=origin_id_col).value or "").strip()
+                if oid:
+                    existing_origin_ids.add(oid)
             continue
         # Avoid jumping to very large row numbers because of stray values in a single cell.
         # Only treat row as "occupied" when it looks like a real credit-card entry.
@@ -581,21 +887,28 @@ def append_credit_card_rows(
         )
         if row_has_core_data:
             last_row = r
-    
+
     appended = 0
     today = date.today()
     next_row = last_row + 1
-    
+
     for row in rows:
         rh = str(row.get("row_hash") or "").strip()
-        if not rh or rh in existing:
+        oid = str(row.get("origin_id") or "").strip()
+
+        # Skip if already in sheet — check by origin_id first, then row_hash
+        if oid and oid in existing_origin_ids:
             continue
-        
+        if rh and rh in existing_hashes:
+            continue
+        if not rh:
+            continue
+
         txn_date = parse_date(row.get("txn_date"))
         due_date = parse_date(row.get("statement_due_date") or row.get("cash_date"))
         if txn_date is None or due_date is None:
             continue
-        
+
         ws.cell(row=next_row, column=hash_col, value=rh)
         ws.cell(row=next_row, column=txn_col, value=txn_date)
         ws.cell(row=next_row, column=due_col, value=due_date)
@@ -603,22 +916,29 @@ def append_credit_card_rows(
         ws.cell(row=next_row, column=sub_col, value=row.get("subcategory") or "")
         ws.cell(row=next_row, column=card_col, value=row.get("account") or "")
         ws.cell(row=next_row, column=desc_col, value=row.get("description") or "")
-        
+
         amt = row.get("amount")
         if amt is not None:
             ws.cell(row=next_row, column=amount_col, value=float(amt))
-        
+
         # Pago por Aline fica vazio por padrão - usuário preenche manualmente
         ws.cell(row=next_row, column=pago_aline_col, value="")
         ws.cell(row=next_row, column=reemb_col, value="Sim" if row.get("reimbursable") else "Não")
         ws.cell(row=next_row, column=status_col, value="Pago" if due_date <= today else "Em aberto")
         ws.cell(row=next_row, column=notes_col, value=row.get("notes") or "")
-        
-        existing.add(rh)
+        if origin_id_col and oid:
+            ws.cell(row=next_row, column=origin_id_col, value=oid)
+
+        existing_hashes.add(rh)
+        if oid:
+            existing_origin_ids.add(oid)
         appended += 1
         next_row += 1
     
     if appended:
+        active_end = _last_used_row(ws, key_cols=(2, 3, 6, 7, 8))
+        validation_end = max(5000, int(active_end) + 200)
+        _apply_cartao_validations(ws, categories_count=len(categories), end_row=validation_end)
         wb.save(path)
     return appended
 
@@ -669,6 +989,9 @@ def append_transactions_to_unified(
     non_cc_rows = [r for r in all_rows if str(r.get("payment_method") or "") != "credit_card"]
     if not non_cc_rows:
         return out
+
+    categories, _, _ = _expense_categories(expense_categories_tree)
+    income_cats = _income_categories(income_categories_tree)
 
     wb = load_workbook(path)
     ws_debitos = wb["Débitos"] if "Débitos" in wb.sheetnames else None
@@ -737,6 +1060,27 @@ def append_transactions_to_unified(
             next_house += 1
 
     if any(v > 0 for v in out.values()):
+        if out["debit"] > 0 and ws_debitos is not None:
+            deb_end = _last_used_row(ws_debitos, key_cols=(1, 4, 5))
+            _apply_debitos_validations(
+                ws_debitos,
+                categories_count=len(categories),
+                end_row=max(5000, int(deb_end) + 200),
+            )
+        if out["income"] > 0 and ws_receitas is not None:
+            rec_end = _last_used_row(ws_receitas, key_cols=(1, 3, 4))
+            _apply_receitas_validations(
+                ws_receitas,
+                has_income_categories=bool(income_cats),
+                end_row=max(5000, int(rec_end) + 200),
+            )
+        if out["household"] > 0 and ws_contas is not None:
+            house_end = _last_used_row(ws_contas, key_cols=(1, 2, 4, 5, 7))
+            _apply_contas_validations(
+                ws_contas,
+                categories_count=len(categories),
+                end_row=max(5000, int(house_end) + 200),
+            )
         wb.save(path)
     return out
 
@@ -773,25 +1117,28 @@ def read_cartao_sheet(path: Path) -> list[dict[str, Any]]:
     reemb_col = _find_col(headers, ("reembolsavel", "reembolsável")) or 10
     status_col = _find_col(headers, ("status",)) or 11
     notes_col = _find_col(headers, ("notas",)) or 12
-    
+    origin_id_col = _find_col(headers, ("origin id (oculto)", "origin_id"))
+
     rows = []
     for r in range(2, ws.max_row + 1):
         rh = ws.cell(row=r, column=hash_col).value
         desc = ws.cell(row=r, column=desc_col).value
         if not rh and not desc:
             continue
-        
+
         amt = ws.cell(row=r, column=amount_col).value
         try:
             amount = float(amt) if amt else None
-        except:
+        except Exception:
             amount = parse_brl_number(amt)
-        
+
         reemb_val = str(ws.cell(row=r, column=reemb_col).value or "").strip().lower()
         pago_aline_val = str(ws.cell(row=r, column=pago_aline_col).value or "").strip().upper()
-        
+        origin_id = str(ws.cell(row=r, column=origin_id_col).value or "").strip() if origin_id_col else ""
+
         rows.append({
             "row_hash": str(rh or "").strip(),
+            "origin_id": origin_id,
             "txn_date": parse_date(ws.cell(row=r, column=txn_col).value),
             "due_date": parse_date(ws.cell(row=r, column=due_col).value),
             "category": str(ws.cell(row=r, column=cat_col).value or "").strip(),
@@ -859,7 +1206,7 @@ def update_credit_card_categories(
     updates: Iterable[dict[str, Any]],
 ) -> tuple[int, int]:
     """
-    Atualiza Categoria/Subcategoria/Reembolsável na aba "Cartão" por row_hash.
+    Atualiza Descrição/Categoria/Subcategoria/Reembolsável na aba "Cartão" por row_hash.
     Retorna (updated_count, missing_count).
     """
     if not path.exists():
@@ -876,6 +1223,7 @@ def update_credit_card_categories(
             headers[normalize_str(v)] = c
 
     hash_col = _find_col(headers, ("hash (oculto)", "hash", "row_hash")) or 1
+    desc_col = _find_col(headers, ("descricao", "descrição")) or 7
     cat_col = _find_col(headers, ("categoria",)) or 4
     sub_col = _find_col(headers, ("subcategoria",)) or 5
     reemb_col = _find_col(headers, ("reembolsavel", "reembolsável", "reimbursable")) or 10
@@ -900,6 +1248,13 @@ def update_credit_card_categories(
             continue
 
         changed = False
+
+        if "description" in u:
+            new_desc = (str(u.get("description") or "").strip() or "")
+            old_desc = str(ws.cell(row=row, column=desc_col).value or "").strip()
+            if new_desc != old_desc:
+                ws.cell(row=row, column=desc_col, value=new_desc)
+                changed = True
 
         if "category" in u:
             new_cat = (str(u.get("category") or "").strip() or "")
@@ -948,6 +1303,7 @@ def read_debitos_sheet(path: Path) -> list[dict[str, Any]]:
             headers[normalize_str(v)] = c
     
     hash_col = _find_col(headers, ("hash (oculto)", "hash", "row_hash"))
+    origin_id_col = _find_col(headers, ("origin id (oculto)", "origin_id"))
     date_col = _find_col(headers, ("data",)) or 1
     cat_col = _find_col(headers, ("categoria",)) or 2
     sub_col = _find_col(headers, ("subcategoria",)) or 3
@@ -956,25 +1312,27 @@ def read_debitos_sheet(path: Path) -> list[dict[str, Any]]:
     pago_aline_col = _find_col(headers, ("pago por aline",)) or 6
     reemb_col = _find_col(headers, ("reembolsavel", "reembolsável")) or 7
     notes_col = _find_col(headers, ("notas",)) or 8
-    
+
     rows = []
     for r in range(2, ws.max_row + 1):
         desc = ws.cell(row=r, column=desc_col).value
         dt = ws.cell(row=r, column=date_col).value
         if not desc and not dt:
             continue
-        
+
         amt = ws.cell(row=r, column=amount_col).value
         try:
             amount = float(amt) if amt else None
-        except:
+        except Exception:
             amount = parse_brl_number(amt)
-        
+
         reemb_val = str(ws.cell(row=r, column=reemb_col).value or "").strip().lower()
         pago_aline_val = str(ws.cell(row=r, column=pago_aline_col).value or "").strip().upper()
-        
+        origin_id = str(ws.cell(row=r, column=origin_id_col).value or "").strip() if origin_id_col else ""
+
         rows.append({
             "row_hash": str(ws.cell(row=r, column=hash_col).value or "").strip() if hash_col else "",
+            "origin_id": origin_id,
             "date": parse_date(dt),
             "category": str(ws.cell(row=r, column=cat_col).value or "").strip(),
             "subcategory": str(ws.cell(row=r, column=sub_col).value or "").strip(),
@@ -984,7 +1342,7 @@ def read_debitos_sheet(path: Path) -> list[dict[str, Any]]:
             "reimbursable": reemb_val in ("sim", "s", "yes", "1", "true"),
             "notes": str(ws.cell(row=r, column=notes_col).value or "").strip(),
         })
-    
+
     return rows
 
 
@@ -1005,6 +1363,7 @@ def read_receitas_sheet(path: Path) -> list[dict[str, Any]]:
             headers[normalize_str(v)] = c
     
     hash_col = _find_col(headers, ("hash (oculto)", "hash", "row_hash"))
+    origin_id_col = _find_col(headers, ("origin id (oculto)", "origin_id"))
     date_col = _find_col(headers, ("data",)) or 1
     cat_col = _find_col(headers, ("categoria",)) or 2
     desc_col = _find_col(headers, ("descricao", "descrição")) or 3
@@ -1012,20 +1371,20 @@ def read_receitas_sheet(path: Path) -> list[dict[str, Any]]:
     recebido_aline_col = _find_col(headers, ("recebido por aline",))
     person_col = _find_col(headers, ("pessoa", "person"))
     notes_col = _find_col(headers, ("notas",)) or 5
-    
+
     rows = []
     for r in range(2, ws.max_row + 1):
         desc = ws.cell(row=r, column=desc_col).value
         dt = ws.cell(row=r, column=date_col).value
         if not desc and not dt:
             continue
-        
+
         amt = ws.cell(row=r, column=amount_col).value
         try:
             amount = float(amt) if amt else None
-        except:
+        except Exception:
             amount = parse_brl_number(amt)
-        
+
         recebido_aline_val = (
             str(ws.cell(row=r, column=recebido_aline_col).value or "").strip().upper()
             if recebido_aline_col
@@ -1033,9 +1392,11 @@ def read_receitas_sheet(path: Path) -> list[dict[str, Any]]:
         )
         person_val = str(ws.cell(row=r, column=person_col).value or "").strip() if person_col else ""
         person = person_val or ("Aline" if recebido_aline_val == "X" else "")
-        
+        origin_id = str(ws.cell(row=r, column=origin_id_col).value or "").strip() if origin_id_col else ""
+
         rows.append({
             "row_hash": str(ws.cell(row=r, column=hash_col).value or "").strip() if hash_col else "",
+            "origin_id": origin_id,
             "date": parse_date(dt),
             "category": str(ws.cell(row=r, column=cat_col).value or "").strip(),
             "description": str(desc or "").strip(),
@@ -1044,7 +1405,7 @@ def read_receitas_sheet(path: Path) -> list[dict[str, Any]]:
             "recebido_por_aline": recebido_aline_val == "X",
             "notes": str(ws.cell(row=r, column=notes_col).value or "").strip(),
         })
-    
+
     return rows
 
 
@@ -1070,6 +1431,7 @@ def read_contas_casa_sheet(path: Path) -> list[dict[str, Any]]:
             headers[normalize_str(v)] = c
     
     hash_col = _find_col(headers, ("hash (oculto)", "hash", "row_hash"))
+    origin_id_col = _find_col(headers, ("origin id (oculto)", "origin_id"))
     ref_col = _find_col(headers, ("mes referencia", "mês referência")) or 1
     cat_col = _find_col(headers, ("categoria", "category")) or 2
     subcat_col = _find_col(headers, ("subcategoria", "subcategory")) or 3
@@ -1079,20 +1441,20 @@ def read_contas_casa_sheet(path: Path) -> list[dict[str, Any]]:
     quem_col = _find_col(headers, ("pago por", "quem pagou", "pessoa", "person"))
     pag_col = _find_col(headers, ("data pagamento",)) or 7
     notes_col = _find_col(headers, ("notas",)) or 8
-    
+
     rows = []
     for r in range(2, ws.max_row + 1):
         ref = ws.cell(row=r, column=ref_col).value
         category = ws.cell(row=r, column=cat_col).value
         if not ref and not category:
             continue
-        
+
         amt = ws.cell(row=r, column=amount_col).value
         try:
             amount = float(amt) if amt else None
-        except:
+        except Exception:
             amount = parse_brl_number(amt)
-        
+
         ref_month = _parse_reference_month(ref)
 
         pago_aline_val = (
@@ -1105,9 +1467,12 @@ def read_contas_casa_sheet(path: Path) -> list[dict[str, Any]]:
             paid_by = "Aline" if pago_aline_val == "X" else "Renan"
         elif quem_col:
             paid_by = str(ws.cell(row=r, column=quem_col).value or "").strip() or None
-        
+
+        origin_id = str(ws.cell(row=r, column=origin_id_col).value or "").strip() if origin_id_col else ""
+
         rows.append({
             "row_hash": str(ws.cell(row=r, column=hash_col).value or "").strip() if hash_col else "",
+            "origin_id": origin_id,
             "reference_month": ref_month,
             "category": str(category or "").strip(),
             "subcategory": str(ws.cell(row=r, column=subcat_col).value or "").strip() or None,

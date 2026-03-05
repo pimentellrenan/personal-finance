@@ -329,9 +329,13 @@ def import_credit_card_csv(
 
         installment = None
         if installment_col:
-            raw_installment = str(r.get(installment_col) or "").strip()
-            if raw_installment and raw_installment != "-":
-                installment = raw_installment
+            installment_raw = r.get(installment_col)
+            # Pandas can surface empty cells as NaN; never emit "Parcela: nan".
+            if installment_raw is not None and not pd.isna(installment_raw):
+                raw_installment = str(installment_raw).strip()
+                raw_norm = normalize_str(raw_installment)
+                if raw_installment and raw_installment != "-" and raw_norm not in ("nan", "none", "null"):
+                    installment = raw_installment
 
         # Build notes: combine installment info and refund indicator
         notes_parts = []

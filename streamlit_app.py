@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import time
+from io import BytesIO
 from calendar import monthrange
 from datetime import date
 from pathlib import Path
@@ -746,6 +747,128 @@ def _display_df_ptbr(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _build_acerto_export_excel(
+    details_df: pd.DataFrame,
+    df_casa: pd.DataFrame,
+    result: Any,
+    ref_month: int,
+    ref_year: int,
+    meses_nomes: list[str],
+) -> tuple[bytes, str]:
+    df_export = details_df.copy() if not details_df.empty else pd.DataFrame()
+    if not df_export.empty:
+        export_cols = [
+            c
+            for c in [
+                "txn_date",
+                "cash_date",
+                "payment_method",
+                "account",
+                "description",
+                "category",
+                "subcategory",
+                "valor",
+                "person",
+                "regra",
+                "renan_deveria",
+                "aline_deveria",
+                "renan_delta",
+                "source_file",
+            ]
+            if c in df_export.columns
+        ]
+        df_export = df_export[export_cols].copy()
+        df_export = df_export.rename(
+            columns={
+                "txn_date": "Data",
+                "cash_date": "Impacto",
+                "payment_method": "Forma",
+                "account": "Cartão/Conta",
+                "description": "Descrição",
+                "category": "Categoria",
+                "subcategory": "Subcategoria",
+                "valor": "Valor (net)",
+                "person": "Quem Pagou",
+                "regra": "Regra",
+                "renan_deveria": "Renan deveria",
+                "aline_deveria": "Aline deveria",
+                "renan_delta": "Saldo Renan",
+                "source_file": "Origem",
+            }
+        )
+
+        def _divide_label(regra: Any) -> str:
+            s = str(regra or "")
+            if s.startswith("Gastos Renan"):
+                return "NAO (Renan)"
+            if s.startswith("Gastos Aline"):
+                return "NAO (Aline)"
+            return "SIM"
+
+        if "Regra" in df_export.columns:
+            df_export["Divide?"] = df_export["Regra"].apply(_divide_label)
+        df_export = df_export.sort_values([c for c in ["Origem", "Data"] if c in df_export.columns])
+
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        if not df_export.empty:
+            df_export.to_excel(writer, sheet_name="Transações", index=False)
+
+        if not df_casa.empty:
+            df_casa_exp = df_casa[df_casa["amount"] < 0][["txn_date", "subcategory", "description", "amount", "person"]].copy()
+            df_casa_exp.columns = ["Data", "Tipo", "Descrição", "Valor", "Quem Pagou"]
+            df_casa_exp["Valor"] = df_casa_exp["Valor"].abs()
+            df_casa_exp.to_excel(writer, sheet_name="Contas da Casa", index=False)
+
+        resumo_data = {
+            "Item": [
+                "Total Despesas",
+                "Gastos para Dividir",
+                "Contas da Casa",
+                "Gastos Individuais Renan",
+                "Gastos Individuais Aline",
+                "",
+                "Renan pagou (dividiveis)",
+                "Aline pagou (dividiveis)",
+                "Familia pagou (dividiveis)",
+                "Renan pagou (casa)",
+                "Aline pagou (casa)",
+                "",
+                "Aline deve a Renan" if result.aline_deve_renan >= 0 else "Renan deve a Aline",
+            ],
+            "Valor": [
+                result.total_despesas,
+                result.total_dividir,
+                result.total_contas_casa,
+                result.total_renan_individual,
+                result.total_aline_individual,
+                None,
+                result.renan_pagou_dividir,
+                result.aline_pagou_dividir,
+                result.familia_pagou_dividir,
+                result.renan_pagou_casa,
+                result.aline_pagou_casa,
+                None,
+                abs(result.aline_deve_renan),
+            ],
+        }
+        pd.DataFrame(resumo_data).to_excel(writer, sheet_name="Resumo", index=False)
+
+        if not details_df.empty and "regra" in details_df.columns and "category" in details_df.columns:
+            df_div = details_df[details_df["regra"] == "Dividir (50/50)"].copy()
+            df_div = df_div[df_div["category"].notna()].copy()
+            df_div = df_div[df_div["category"].astype(str).str.strip() != ""].copy()
+            if not df_div.empty:
+                by_cat_export = df_div.groupby("category")["valor"].sum().sort_values(ascending=False).reset_index()
+                by_cat_export.columns = ["Categoria", "Total (net)"]
+                by_cat_export["Cada um paga (÷2)"] = by_cat_export["Total (net)"] / 2
+                by_cat_export.to_excel(writer, sheet_name="Por Categoria", index=False)
+
+    month_name = meses_nomes[ref_month - 1] if 1 <= ref_month <= 12 else str(ref_month)
+    filename = f"acerto_{str(month_name).lower()}_{ref_year}.xlsx"
+    return output.getvalue(), filename
+
+
 def _expense_categories(expense_tree: dict) -> tuple[list[str], dict[str, list[str]]]:
     categories: list[str] = []
     sub_map: dict[str, list[str]] = {}
@@ -758,6 +881,176 @@ def _expense_categories(expense_tree: dict) -> tuple[list[str], dict[str, list[s
         categories.append(cat)
         sub_map[cat] = [str(x).strip() for x in subs if str(x).strip()]
     return categories, sub_map
+
+
+@st.fragment
+def _render_bulk_cat(
+    conn,
+    start,
+    end,
+    expense_categories_tree: dict,
+    unified_xlsx,
+) -> None:
+    """Seção de categorização em lote como fragmento isolado.
+
+    Zero rerun: todas as subcategorias são sempre exibidas.
+    Validação cat↔subcat acontece apenas no Salvar.
+    """
+    expense_cats, expense_sub_map = _expense_categories(expense_categories_tree)
+    # Lista plana de todas as subcategorias
+    all_subcats: list[str] = []
+    for subs in expense_sub_map.values():
+        for s in subs:
+            if s not in all_subcats:
+                all_subcats.append(s)
+    all_subcats.sort()
+
+    df_edit_src = pf_queries.load_transactions_df(conn, start=start, end=end)
+    _pm_filter_opts = ["Todos"] + sorted(
+        {str(r) for r in df_edit_src["payment_method"].dropna().unique()} if not df_edit_src.empty else []
+    )
+    _filter_cols = st.columns([2, 2, 1])
+    with _filter_cols[0]:
+        _pm_sel = st.selectbox("Forma de pagamento", _pm_filter_opts, key="cat_pm_filter", label_visibility="collapsed")
+    with _filter_cols[1]:
+        _cat_status = st.selectbox(
+            "Status",
+            ["Todos", "Sem categoria", "Já categorizados"],
+            key="cat_status_filter",
+            label_visibility="collapsed",
+        )
+    with _filter_cols[2]:
+        _reemb_only = st.checkbox("Só reembolsáveis", key="cat_reemb_filter")
+
+    _current_filter_key = (_pm_sel, _cat_status, _reemb_only, str(start), str(end))
+    _editor_key = f"bulk_cat_editor_{hash(_current_filter_key)}"
+
+    if df_edit_src.empty:
+        st.info("Sem transações no período.")
+        return
+    df_bulk = df_edit_src.copy()
+    df_bulk = df_bulk[df_bulk["payment_method"] != "income"].copy()
+    if _pm_sel != "Todos":
+        df_bulk = df_bulk[df_bulk["payment_method"] == _pm_sel]
+    if _cat_status == "Sem categoria":
+        df_bulk = df_bulk[df_bulk["category"].isna() | (df_bulk["category"].astype(str).str.strip() == "")]
+    elif _cat_status == "Já categorizados":
+        df_bulk = df_bulk[df_bulk["category"].notna() & (df_bulk["category"].astype(str).str.strip() != "")]
+    if _reemb_only:
+        df_bulk = df_bulk[df_bulk["reimbursable"].astype(int) == 1]
+
+    if df_bulk.empty:
+        st.info("Nenhuma transação com esse filtro.")
+        return
+
+    if "id" in df_bulk.columns:
+        df_bulk = df_bulk.sort_values("id", ascending=False)
+    df_bulk = df_bulk.head(300).reset_index(drop=True)
+
+    _edit_df = pd.DataFrame({
+        "row_hash": df_bulk["row_hash"].astype(str),
+        "Data": pd.to_datetime(df_bulk["txn_date"], errors="coerce").dt.strftime("%d/%m/%Y"),
+        "Conta": df_bulk.get("account", pd.Series([""] * len(df_bulk))).fillna("").astype(str),
+        "Descrição": df_bulk["description"].fillna("").astype(str),
+        "Valor": df_bulk["amount"].apply(lambda v: float(v)),
+        "Categoria": df_bulk["category"].fillna("").astype(str),
+        "Subcategoria": df_bulk["subcategory"].fillna("").astype(str),
+        "Reemb.": df_bulk["reimbursable"].astype(int).apply(lambda v: bool(v)),
+    })
+
+    cat_opts = [""] + expense_cats
+    sub_opts = [""] + all_subcats
+
+    edited = st.data_editor(
+        _edit_df,
+        column_config={
+            "row_hash": None,
+            "Data": st.column_config.TextColumn("Data", disabled=True, width="small"),
+            "Conta": st.column_config.TextColumn("Conta", disabled=True, width="small"),
+            "Descrição": st.column_config.TextColumn("Descrição", width="large"),
+            "Valor": st.column_config.NumberColumn("Valor", format="R$ %.2f", disabled=True, width="small"),
+            "Categoria": st.column_config.SelectboxColumn("Categoria", options=cat_opts, width="medium"),
+            "Subcategoria": st.column_config.SelectboxColumn("Subcategoria", options=sub_opts, width="medium"),
+            "Reemb.": st.column_config.CheckboxColumn("Reemb.", width="small"),
+        },
+        hide_index=True,
+        use_container_width=True,
+        key=_editor_key,
+        num_rows="fixed",
+    )
+
+    # ── Validação e correção de subcategorias no momento do save ──────
+    edited_to_save = edited.copy()
+    auto_fixed_subcats = 0
+    for i in range(len(edited_to_save)):
+        cat_now = str(edited_to_save.at[i, "Categoria"] or "").strip()
+        sub_now = str(edited_to_save.at[i, "Subcategoria"] or "").strip()
+        allowed_subs = expense_sub_map.get(cat_now, []) if cat_now else []
+
+        sub_new = sub_now
+        if not cat_now:
+            sub_new = ""
+        elif not allowed_subs:
+            sub_new = ""
+        elif sub_now and sub_now not in allowed_subs:
+            sub_new = ""
+
+        if sub_new != sub_now:
+            edited_to_save.at[i, "Subcategoria"] = sub_new
+            auto_fixed_subcats += 1
+
+    # ── Detectar linhas alteradas ────────────────────────────────────
+    _changed = edited_to_save[
+        (edited_to_save["Descrição"] != _edit_df["Descrição"])
+        | (edited["Categoria"] != _edit_df["Categoria"])
+        | (edited_to_save["Subcategoria"] != _edit_df["Subcategoria"])
+        | (edited["Reemb."] != _edit_df["Reemb."])
+    ]
+    n_changed = len(_changed)
+
+    _save_col, _info_col = st.columns([1, 3])
+    with _save_col:
+        save_btn = st.button(
+            f"💾 Salvar {n_changed} alteração(ões)" if n_changed else "💾 Salvar",
+            type="primary",
+            disabled=(n_changed == 0),
+            key="bulk_cat_save",
+        )
+    with _info_col:
+        if n_changed:
+            st.caption(f"✏️ {n_changed} linha(s) modificada(s) — clique Salvar para confirmar.")
+            if auto_fixed_subcats > 0:
+                st.caption(
+                    f"🔧 {auto_fixed_subcats} subcategoria(s) serão ajustadas ao salvar (cat↔subcat incompatível)."
+                )
+        else:
+            st.caption("Edite Descrição / Categoria / Subcategoria / Reemb. nas linhas desejadas e salve.")
+
+    if save_btn and n_changed:
+        updates = [
+            {
+                "row_hash": str(row["row_hash"]),
+                "description": str(row["Descrição"] or "").strip(),
+                "category": (str(row["Categoria"]).strip() or None),
+                "subcategory": (str(row["Subcategoria"]).strip() or None),
+                "reimbursable": bool(row["Reemb."]),
+            }
+            for _, row in _changed.iterrows()
+        ]
+        try:
+            updated_db, missing_db = pf_db.bulk_update_categories_by_row_hash(
+                conn, updates, allow_clear=True
+            )
+            updated_xlsx, missing_xlsx = pf_excel_unified.update_credit_card_categories(
+                unified_xlsx, updates=updates
+            )
+            st.success(
+                f"✅ {updated_db} transação(ões) salva(s) no banco "
+                f"({missing_db} não encontradas) | "
+                f"Excel: {updated_xlsx} atualizada(s)."
+            )
+        except Exception as e:
+            st.error(f"Falha ao salvar: {e}")
 
 
 def _income_categories(income_tree: dict) -> list[str]:
@@ -923,28 +1216,122 @@ def main() -> None:
     _normalize_legacy_expense_categories(conn)
     _migrate_credit_card_statement_meta_keys(conn, cards)
 
-    main_pages = ["Dashboard", "Gerenciamento de Cartões", "Investimentos"]
-    advanced_pages = ["Transações", "Config"]
-    nav_options = main_pages + advanced_pages
+    pending_review_count = pf_db.count_pending_reviews(conn)
+
+    review_label = f"Revisão ({pending_review_count})" if pending_review_count > 0 else "Revisão"
+    nav_options = ["Dashboard", "Lançamentos", review_label, "Investimentos"]
     if "nav" not in st.session_state:
-        st.session_state["nav"] = main_pages[0]
-    current_nav = st.session_state.get("nav", main_pages[0])
-    legacy_map = {"Visão Geral": "Dashboard", "Importar": "Dashboard", "Rotina": "Dashboard"}
+        st.session_state["nav"] = "Dashboard"
+    current_nav = st.session_state.get("nav", "Dashboard")
+    legacy_map = {
+        "Visão Geral": "Dashboard",
+        "Importar": "Dashboard",
+        "Rotina": "Dashboard",
+        "Gerenciamento de Cartões": "Dashboard",
+        "Gerenciamento de Cartoes": "Dashboard",
+        "Acerto Mensal": "Dashboard",
+        "Transações": "Dashboard",
+        "Transacoes": "Dashboard",
+        "Config": "Dashboard",
+        "Revisão de Importação": review_label,
+    }
     current_nav = legacy_map.get(str(current_nav), current_nav)
     if current_nav not in nav_options:
-        current_nav = main_pages[0]
+        current_nav = "Dashboard"
+    st.session_state["nav"] = current_nav
 
-    def _go(page: str) -> None:
-        st.session_state["nav"] = page
-        st.rerun()
+    nav_labels = {
+        "Dashboard": "🏠 Dashboard",
+        "Lançamentos": "🧾 Lançamentos",
+        review_label: f"🔎 {review_label}",
+        "Investimentos": "📈 Investimentos",
+    }
+    st.caption("Navegação")
+    if hasattr(st, "segmented_control"):
+        nav_selected = st.segmented_control(
+            "Navegação",
+            nav_options,
+            default=current_nav,
+            format_func=lambda v: nav_labels.get(v, v),
+            selection_mode="single",
+            key="nav_top",
+            label_visibility="collapsed",
+            width="stretch",
+        )
+    else:
+        nav_selected = st.radio(
+            "Navegação",
+            nav_options,
+            index=nav_options.index(current_nav),
+            format_func=lambda v: nav_labels.get(v, v),
+            horizontal=True,
+            key="nav_top_fallback",
+            label_visibility="collapsed",
+        )
+    nav = str(nav_selected or current_nav)
+    st.session_state["nav"] = nav
 
-    nav = st.sidebar.radio(
-        "Página",
-        nav_options,
-        index=nav_options.index(current_nav),
-        key="nav",
-        label_visibility="collapsed",
-    )
+    # ── Seleção de Período (sempre no topo) ─────────────────────────────────
+    today = date.today()
+
+    def _add_months(d: date, delta: int) -> date:
+        m0 = (d.month - 1) + int(delta)
+        y = d.year + (m0 // 12)
+        m = (m0 % 12) + 1
+        return date(y, m, 1)
+
+    mes_nomes = [
+        "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
+        "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
+    ]
+
+    with st.sidebar.expander("📅 Período", expanded=True):
+        meses_dropdown: list[str] = []
+        start_m = date(2026, 1, 1)
+        max_cash_raw = conn.execute("SELECT MAX(cash_date) FROM transactions").fetchone()[0]
+        end_m = start_m
+        if max_cash_raw:
+            try:
+                max_cash_dt = date.fromisoformat(str(max_cash_raw)[:10])
+                end_m = date(max_cash_dt.year, max_cash_dt.month, 1)
+            except Exception:  # noqa: BLE001
+                end_m = start_m
+        if end_m < start_m:
+            end_m = start_m
+        # Sempre inclui 3 meses futuros além do maior registro
+        end_m = max(end_m, _add_months(date(today.year, today.month, 1), 3))
+        cursor = start_m
+        while cursor <= end_m:
+            meses_dropdown.append(f"{mes_nomes[cursor.month-1]}/{cursor.year}")
+            cursor = _add_months(cursor, 1)
+
+        default_month = date(today.year, today.month, 1)
+        if today.day >= 6:
+            default_month = _add_months(default_month, 1)
+        if default_month < start_m:
+            default_month = start_m
+        if default_month > end_m:
+            default_month = end_m
+        default_label = f"{mes_nomes[default_month.month-1]}/{default_month.year}"
+        default_idx = meses_dropdown.index(default_label) if default_label in meses_dropdown else 0
+
+        mes_selecionado = st.selectbox(
+            "Mês",
+            meses_dropdown,
+            index=default_idx,
+            key="period_month",
+            label_visibility="collapsed",
+        )
+        partes_mes = mes_selecionado.split("/")
+        selected_month = mes_nomes.index(partes_mes[0]) + 1
+        selected_year = int(partes_mes[1])
+        start = date(selected_year, selected_month, 1)
+        last_day = monthrange(selected_year, selected_month)[1]
+        end = date(selected_year, selected_month, last_day)
+        st.caption(f"{start.strftime('%d/%m/%Y')} → {end.strftime('%d/%m/%Y')}")
+
+    df = pf_queries.load_transactions_df(conn, start=start, end=end)
+
     # Seção de Atualização (CSV/Excel) na sidebar
     raw_dir = base_dir / "raw_data"
     templates_dir = base_dir / "templates"
@@ -965,11 +1352,47 @@ def main() -> None:
             cards=[c.name for c in cards.values()],
         )
 
-        excel_bytes = unified_xlsx.read_bytes() if unified_xlsx.exists() else None
+        # Sincronizar DB → Excel uma vez por sessão para garantir que todos os
+        # lançamentos do banco estejam no arquivo (inclusive os importados antes
+        # do Excel ser (re)criado ou atualizados com categoria no app).
+        if not st.session_state.get("_excel_db_synced") and unified_xlsx.exists():
+            try:
+                _sync_rows = conn.execute(
+                    """
+                    SELECT origin_id, row_hash, txn_date, cash_date,
+                           statement_due_date, amount, description, account,
+                           category, subcategory, person, reimbursable, notes,
+                           payment_method, reference
+                    FROM transactions
+                    WHERE COALESCE(hidden_in_excel, 0) = 0
+                    """
+                ).fetchall()
+                pf_excel_unified.append_transactions_to_unified(
+                    unified_xlsx,
+                    rows=[dict(r) for r in _sync_rows],
+                    expense_categories_tree=expense_categories_tree,
+                    income_categories_tree=income_categories_tree,
+                    cards=[c.name for c in cards.values()],
+                )
+            except Exception:
+                pass
+            st.session_state["_excel_db_synced"] = True
+
+        # Gerar bytes sem nenhum filtro pré-definido.
+        excel_bytes = pf_excel_unified.get_clean_download_bytes(unified_xlsx) if unified_xlsx.exists() else None
         if excel_bytes:
             st.download_button(
                 "📊 Abrir Excel (baixar)",
                 data=excel_bytes,
+                file_name="financas.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width="stretch",
+            )
+        elif unified_xlsx.exists():
+            # Arquivo existe mas get_clean_download_bytes falhou — oferecer raw
+            st.download_button(
+                "📊 Abrir Excel (baixar)",
+                data=unified_xlsx.read_bytes(),
                 file_name="financas.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width="stretch",
@@ -1088,11 +1511,12 @@ def main() -> None:
                 placeholders = ", ".join(["?"] * len(imported_paths))
                 rows_db = conn.execute(
                     f"""
-                    SELECT row_hash, txn_date, cash_date, statement_due_date, amount,
-                           description, account, category, subcategory, person, 
+                    SELECT origin_id, row_hash, txn_date, cash_date, statement_due_date, amount,
+                           description, account, category, subcategory, person,
                            reimbursable, notes
                     FROM transactions
                     WHERE payment_method = 'credit_card'
+                      AND COALESCE(hidden_in_excel, 0) = 0
                       AND source_file IN ({placeholders})
                     """,
                     imported_paths,
@@ -1107,79 +1531,6 @@ def main() -> None:
             st.rerun()
 
         # Sincronização do Excel ocorre automaticamente ao enviar o arquivo atualizado.
-
-    today = date.today()
-    period_expanded = nav in ("Dashboard", "Transações")
-    
-    with st.sidebar.expander("Período (Dashboard/Transações)", expanded=period_expanded):
-        def _add_months(d: date, delta: int) -> date:
-            m0 = (d.month - 1) + int(delta)
-            y = d.year + (m0 // 12)
-            m = (m0 % 12) + 1
-            return date(y, m, 1)
-
-        mes_nomes = [
-            "Janeiro",
-            "Fevereiro",
-            "Março",
-            "Abril",
-            "Maio",
-            "Junho",
-            "Julho",
-            "Agosto",
-            "Setembro",
-            "Outubro",
-            "Novembro",
-            "Dezembro",
-        ]
-
-        # Gerar lista de meses (inclui futuros)
-        meses_dropdown: list[str] = []
-        start_m = date(2026, 1, 1)
-        max_cash_raw = conn.execute("SELECT MAX(cash_date) FROM transactions").fetchone()[0]
-        end_m = start_m
-        if max_cash_raw:
-            try:
-                max_cash_dt = date.fromisoformat(str(max_cash_raw)[:10])
-                end_m = date(max_cash_dt.year, max_cash_dt.month, 1)
-            except Exception:  # noqa: BLE001
-                end_m = start_m
-        if end_m < start_m:
-            end_m = start_m
-        cursor = start_m
-        while cursor <= end_m:
-            meses_dropdown.append(f"{mes_nomes[cursor.month-1]}/{cursor.year}")
-            cursor = _add_months(cursor, 1)
-
-        default_month = date(today.year, today.month, 1)
-        if default_month < start_m:
-            default_month = start_m
-        if default_month > end_m:
-            default_month = end_m
-        default_label = f"{mes_nomes[default_month.month-1]}/{default_month.year}"
-        default_idx = meses_dropdown.index(default_label) if default_label in meses_dropdown else len(meses_dropdown) - 1
-
-        # Dropdown de mês/ano
-        mes_selecionado = st.selectbox(
-            "📅 Mês",
-            meses_dropdown,
-            index=default_idx,
-            key="period_month"
-        )
-        
-        # Parsear mês selecionado
-        partes_mes = mes_selecionado.split("/")
-        selected_month = mes_nomes.index(partes_mes[0]) + 1
-        selected_year = int(partes_mes[1])
-        
-        # Calcular datas do mês
-        start = date(selected_year, selected_month, 1)
-        last_day = monthrange(selected_year, selected_month)[1]
-        end = date(selected_year, selected_month, last_day)
-        
-        st.caption(f"Período: {start.strftime('%d/%m/%Y')} a {end.strftime('%d/%m/%Y')}")
-
-    df = pf_queries.load_transactions_df(conn, start=start, end=end)
 
     def sync_excels_ui(
         *,
@@ -1353,49 +1704,66 @@ def main() -> None:
             details_df = pd.DataFrame(acerto_result.detalhes)
             if details_df.empty:
                 st.info("Sem transações consideradas no acerto.")
-                return
-
-            tabs = st.tabs(["Transações", "Por categoria"])
-            with tabs[0]:
-                show_cols = [
-                    c
-                    for c in [
-                        "txn_date",
-                        "payment_method",
-                        "account",
-                        "description",
-                        "category",
-                        "subcategory",
-                        "person",
-                        "valor",
-                        "regra",
-                        "renan_deveria",
-                        "aline_deveria",
-                        "renan_delta",
+            else:
+                tabs = st.tabs(["Transações", "Por categoria"])
+                with tabs[0]:
+                    show_cols = [
+                        c
+                        for c in [
+                            "txn_date",
+                            "payment_method",
+                            "account",
+                            "description",
+                            "category",
+                            "subcategory",
+                            "person",
+                            "valor",
+                            "regra",
+                            "renan_deveria",
+                            "aline_deveria",
+                            "renan_delta",
+                        ]
+                        if c in details_df.columns
                     ]
-                    if c in details_df.columns
-                ]
-                show = details_df[show_cols].copy()
-                for col in ("valor", "renan_deveria", "aline_deveria", "renan_delta"):
-                    if col in show.columns:
-                        show[col] = show[col].apply(lambda v: _fmt_brl(float(v)))
-                st.dataframe(show, width="stretch", hide_index=True)
+                    show = details_df[show_cols].copy()
+                    for col in ("valor", "renan_deveria", "aline_deveria", "renan_delta"):
+                        if col in show.columns:
+                            show[col] = show[col].apply(lambda v: _fmt_brl(float(v)))
+                    st.dataframe(show, width="stretch", hide_index=True)
 
-            with tabs[1]:
-                if "regra" not in details_df.columns or "valor" not in details_df.columns:
-                    st.info("Sem dados para agrupar.")
-                    return
-                div = details_df[(details_df["regra"] == "Dividir (50/50)") & details_df["category"].notna()].copy()
-                div = div[div["category"].astype(str).str.strip() != ""]
-                if div.empty:
-                    st.info("Sem itens para dividir por categoria.")
-                    return
-                by_cat = div.groupby("category")["valor"].sum().sort_values(ascending=False).reset_index()
-                by_cat.columns = ["Categoria", "Total (net)"]
-                by_cat["Cada um (÷2)"] = by_cat["Total (net)"] / 2
-                by_cat["Total (net)"] = by_cat["Total (net)"].apply(lambda v: _fmt_brl(float(v)))
-                by_cat["Cada um (÷2)"] = by_cat["Cada um (÷2)"].apply(lambda v: _fmt_brl(float(v)))
-                st.dataframe(by_cat, width="stretch", hide_index=True)
+                with tabs[1]:
+                    if "regra" not in details_df.columns or "valor" not in details_df.columns:
+                        st.info("Sem dados para agrupar.")
+                    else:
+                        div = details_df[(details_df["regra"] == "Dividir (50/50)") & details_df["category"].notna()].copy()
+                        div = div[div["category"].astype(str).str.strip() != ""]
+                        if div.empty:
+                            st.info("Sem itens para dividir por categoria.")
+                        else:
+                            by_cat = div.groupby("category")["valor"].sum().sort_values(ascending=False).reset_index()
+                            by_cat.columns = ["Categoria", "Total (net)"]
+                            by_cat["Cada um (÷2)"] = by_cat["Total (net)"] / 2
+                            by_cat["Total (net)"] = by_cat["Total (net)"].apply(lambda v: _fmt_brl(float(v)))
+                            by_cat["Cada um (÷2)"] = by_cat["Cada um (÷2)"].apply(lambda v: _fmt_brl(float(v)))
+                            st.dataframe(by_cat, width="stretch", hide_index=True)
+
+            st.markdown("---")
+            acerto_excel, acerto_filename = _build_acerto_export_excel(
+                details_df=details_df,
+                df_casa=df_acerto_casa,
+                result=acerto_result,
+                ref_month=acerto_month,
+                ref_year=acerto_year,
+                meses_nomes=meses_nomes[1:],
+            )
+            st.download_button(
+                "Baixar Excel do Acerto",
+                data=acerto_excel,
+                file_name=acerto_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                key=f"acerto_modal_download_{acerto_year}_{acerto_month}",
+            )
 
         st.markdown("---")
         col_a, col_b = st.columns([3, 1])
@@ -1536,7 +1904,7 @@ def main() -> None:
         st.markdown("---")
         st.markdown("### 💳 Faturas por Cartão")
         st.caption(
-            "Configure a data de **fechamento** em **Gerenciamento de Cartões** e marque a fatura como **paga** quando houver data de pagamento. "
+            "Configure a data de **fechamento** no próprio card da fatura e marque a fatura como **paga** quando houver data de pagamento. "
             "Clique em uma fatura (ou Débitos) para ver detalhes."
         )
 
@@ -1771,11 +2139,17 @@ def main() -> None:
                     if "statement_closing_date" not in stmt_df.columns:
                         stmt_df["statement_closing_date"] = None
 
+                    # Normalise closing_date to string so max() works regardless of dtype
+                    stmt_df["statement_closing_date"] = (
+                        stmt_df["statement_closing_date"]
+                        .where(stmt_df["statement_closing_date"].notna(), other=None)
+                        .apply(lambda v: str(v)[:10] if v is not None else None)
+                    )
                     grouped = (
                         stmt_df.groupby(["account", "statement_due_date"], dropna=False)
                         .agg(
                             total_amount=("amount", "sum"),
-                            closing_date=("statement_closing_date", "max"),
+                            closing_date=("statement_closing_date", lambda s: next((v for v in sorted(s.dropna().astype(str), reverse=True)), None)),
                         )
                         .reset_index()
                     )
@@ -2224,117 +2598,6 @@ def main() -> None:
                         show_df = show_df.sort_values("Data", ascending=False)
                     st.dataframe(show_df, hide_index=True, width="stretch")
 
-    elif nav == "Gerenciamento de Cartões":
-        st.subheader("💳 Gerenciamento de Cartões")
-        st.caption(
-            "Defina o calendário de **vencimento** e **fechamento** por mês. "
-            "O status **Aberta/Fechada** usa o *fechamento*; **Pendente/Paga** depende apenas do pagamento informado no card."
-        )
-
-        month_start = start
-        month_end = end
-
-        # Montar uma linha por cartão para o mês selecionado (vencimento no mês).
-        rows: list[dict] = []
-        for c in cards.values():
-            due_dt: date | None = None
-            closing_dt: date | None = None
-
-            # 1) Preferir calendário salvo (meta) dentro do mês.
-            meta_in_month = conn.execute(
-                """
-                SELECT statement_due_date, statement_closing_date
-                FROM credit_card_statements
-                WHERE card_source = ?
-                  AND statement_due_date >= ?
-                  AND statement_due_date <= ?
-                ORDER BY statement_due_date ASC
-                LIMIT 1
-                """,
-                (str(c.id), month_start.isoformat(), month_end.isoformat()),
-            ).fetchone()
-            if meta_in_month is not None:
-                due_dt = _to_date(meta_in_month["statement_due_date"])
-                closing_dt = _to_date(meta_in_month["statement_closing_date"])
-
-            # 2) Senão, tentar inferir pelo que já existe no banco (transações do mês).
-            if due_dt is None:
-                txn_due = conn.execute(
-                    """
-                    SELECT statement_due_date
-                    FROM transactions
-                    WHERE payment_method = 'credit_card'
-                      AND account = ?
-                      AND statement_due_date IS NOT NULL
-                      AND statement_due_date >= ?
-                      AND statement_due_date <= ?
-                    ORDER BY statement_due_date ASC
-                    LIMIT 1
-                    """,
-                    (str(c.name), month_start.isoformat(), month_end.isoformat()),
-                ).fetchone()
-                if txn_due is not None:
-                    due_dt = _to_date(txn_due["statement_due_date"])
-
-            # 3) Fallback: usar dia do vencimento do config.
-            if due_dt is None:
-                due_dt = clamp_day(month_start.year, month_start.month, int(c.due_day))
-
-            # Fechamento default pelo config do cartão (pode ser sobrescrito no editor)
-            if closing_dt is None and due_dt is not None:
-                closing_dt = _default_statement_closing_date(due_dt, closing_day=int(c.closing_day))
-
-            rows.append(
-                {
-                    "id": str(c.id),
-                    "Cartão": str(c.name),
-                    "Vencimento": due_dt,
-                    "Fechamento": closing_dt,
-                }
-            )
-
-        sched_df = pd.DataFrame(rows).set_index("id")
-
-        edited = st.data_editor(
-            sched_df,
-            hide_index=True,
-            width="stretch",
-            disabled=["Cartão"],
-            column_config={
-                "Vencimento": st.column_config.DateColumn("Vencimento", help="Data de vencimento da fatura (mês selecionado)."),
-                "Fechamento": st.column_config.DateColumn("Fechamento", help="Data de fechamento da fatura (pode ser no mês anterior)."),
-            },
-        )
-
-        if st.button("Salvar calendário do mês", type="primary", width="stretch"):
-            updated = 0
-            for card_id, r in edited.iterrows():
-                due_dt = r.get("Vencimento")
-                closing_dt = r.get("Fechamento")
-                due_date = due_dt if isinstance(due_dt, date) else _to_date(due_dt)
-                closing_date = closing_dt if isinstance(closing_dt, date) else _to_date(closing_dt)
-
-                if due_date is None:
-                    continue
-
-                meta = pf_db.get_credit_card_statement_meta(conn, card_source=str(card_id), statement_due_date=due_date)
-                paid_dt = _to_date(meta.get("paid_date")) if meta else None
-                paid_flag = bool(int(meta.get("is_paid") or 0)) if meta else False
-
-                pf_db.upsert_credit_card_statement_meta(
-                    conn,
-                    card_source=str(card_id),
-                    statement_due_date=due_date,
-                    statement_closing_date=closing_date,
-                    is_closed=bool(closing_date is not None and today >= closing_date),
-                    is_paid=paid_flag,
-                    paid_date=paid_dt if paid_flag else None,
-                )
-                updated += 1
-
-            st.success(f"✅ Calendário atualizado ({updated} cartão(ões)).")
-            st.rerun()
-
     elif nav == "Investimentos":
         st.subheader("📈 Investimentos")
 
@@ -2608,450 +2871,9 @@ def main() -> None:
                 )
 
                 st.altair_chart((bars + total_line).properties(height=420), use_container_width=True)
-    elif nav == "Acerto Mensal":
-        st.subheader("💰 Acerto Mensal com Aline")
-        
-        # Meses para seleção amigável
-        meses_nomes = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", 
-                       "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
-        
-        # Gerar opções de meses recentes (últimos 6 meses)
-        opcoes_acerto = []
-        for i in range(6):
-            m = today.month - i
-            y = today.year
-            if m <= 0:
-                m += 12
-                y -= 1
-            opcoes_acerto.append(f"{meses_nomes[m-1]} {y}")
-        
-        acerto_selecionado = st.selectbox(
-            "📅 Selecione o mês do acerto",
-            opcoes_acerto,
-            index=0,
-            help="Mês em que você faz o acerto (início do mês)"
-        )
-        
-        # Parsear seleção
-        partes = acerto_selecionado.split()
-        ref_month = meses_nomes.index(partes[0]) + 1
-        ref_year = int(partes[1])
-        
-        # Mês anterior (para débitos e faturas 2ª quinzena)
-        prev_month = ref_month - 1 if ref_month > 1 else 12
-        prev_year = ref_year if ref_month > 1 else ref_year - 1
-        
-        st.caption(f"""
-        **O que entra no acerto de {meses_nomes[ref_month-1]}:**
-        - 💳 Cartões com vencimento **até dia 10** entram no mês do acerto (ex: XP 05, Nubank Aline 05)
-        - 💳 Cartões com vencimento **após dia 10** entram com a fatura do mês anterior (ex: Nubank 19, C6 20, Mercado Pago 17)
-        - 💵 Débitos/PIX de **{meses_nomes[prev_month-1]}**
-        - 🏠 **Contas da Casa pagas em {meses_nomes[ref_month-1]}** (podem ter \"Mês Referência\" do mês anterior)
-        """)
-        
-        # Período de faturas definido por cartão (regra fixa):
-        # - XP e Nubank Aline → mês do acerto
-        # - Demais cartões → mês anterior
-        cartao_prev_start = date(prev_year, prev_month, 1)
-        cartao_prev_end = date(prev_year, prev_month, monthrange(prev_year, prev_month)[1])
-        cartao_curr_start = date(ref_year, ref_month, 1)
-        cartao_curr_end = date(ref_year, ref_month, monthrange(ref_year, ref_month)[1])
-        acerto_period = (ref_year * 12) + ref_month
-        
-        # Período para débitos: mês anterior inteiro
-        debito_start = date(prev_year, prev_month, 1)
-        debito_end = date(prev_year, prev_month, monthrange(prev_year, prev_month)[1])
-        
-        # Buscar faturas de cartão (cash_date = vencimento)
-        df_cartoes_all = pf_queries.load_transactions_df(conn, start=cartao_prev_start, end=cartao_curr_end)
-        df_cartoes_all = (
-            df_cartoes_all[df_cartoes_all["payment_method"] == "credit_card"].copy()
-            if not df_cartoes_all.empty
-            else df_cartoes_all
-        )
-        if not df_cartoes_all.empty:
-            offset_by_account = {
-                c.name: (0 if c.id in ("xp", "nubank_aline") else -1)
-                for c in cards.values()
-            }
-            due_col = "statement_due_date" if "statement_due_date" in df_cartoes_all.columns else "cash_date"
-            due_dt = pd.to_datetime(df_cartoes_all[due_col], errors="coerce")
-            due_period = (due_dt.dt.year * 12) + due_dt.dt.month
-            offset = df_cartoes_all["account"].map(offset_by_account)
-            fallback_offset = (due_dt.dt.day > 10).astype(int) * -1
-            offset = offset.fillna(fallback_offset)
-            expected_period = acerto_period + offset.astype(int)
-            df_cartoes = df_cartoes_all[due_period == expected_period].copy()
-        else:
-            df_cartoes = df_cartoes_all
-        
-        # Buscar débitos do mês anterior por data da transação (txn_date)
-        df_debitos = pf_queries.load_transactions_df_by_txn_date(conn, start=debito_start, end=debito_end)
-        df_debitos = df_debitos[~df_debitos["payment_method"].isin(["credit_card", "household", "income"])].copy() if not df_debitos.empty else df_debitos
-        
-        # Buscar contas da casa do mês CORRENTE (não do anterior!)
-        casa_start = date(ref_year, ref_month, 1)
-        casa_end = date(ref_year, ref_month, monthrange(ref_year, ref_month)[1])
-        df_casa = pf_queries.load_transactions_df(conn, start=casa_start, end=casa_end)
-        df_casa = df_casa[df_casa["payment_method"] == "household"].copy() if not df_casa.empty else df_casa
-        
-        # Combinar cartões e débitos
-        df_acerto = pd.concat([df_cartoes, df_debitos], ignore_index=True)
-        
-        if df_acerto.empty and df_casa.empty:
-            st.info("Sem transações no período selecionado.")
-        else:
-            # Usar o módulo de reconciliação
-            result = pf_recon.calculate_reconciliation(
-                df_acerto,
-                reference_month=ref_month,
-                reference_year=ref_year,
-                include_household=True,
-                df_household=df_casa,
-            )
-            details_df = pd.DataFrame(result.detalhes)
-            
-            # Resumo visual
-            st.markdown("---")
-            st.markdown(f"### 📊 Resumo do Acerto de {meses_nomes[ref_month-1]}/{ref_year}")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("💸 Total Despesas", f"R$ {result.total_despesas:,.2f}")
-            with col2:
-                st.metric("🔄 Dividir (÷2)", f"R$ {result.total_dividir:,.2f}")
-            with col3:
-                st.metric("🏠 Contas Casa", f"R$ {result.total_contas_casa:,.2f}")
-            with col4:
-                if result.qtd_sem_categoria > 0:
-                    st.metric("⚠️ Sem Categoria", f"R$ {result.sem_categoria:,.2f}", delta=f"{result.qtd_sem_categoria} itens", delta_color="inverse")
-                else:
-                    st.metric("✅ Categorizado", "OK")
-            
-            st.markdown("---")
-            st.markdown("### 👤 Gastos Individuais (não dividem)")
-            col_r, col_a = st.columns(2)
-            with col_r:
-                st.metric("🧔 Renan", f"R$ {result.total_renan_individual:,.2f}")
-            with col_a:
-                st.metric("👩 Aline", f"R$ {result.total_aline_individual:,.2f}")
-            
-            # Quem pagou o quê
-            st.markdown("---")
-            st.markdown("### 💳 Quem Pagou")
-            col_p1, col_p2, col_p3 = st.columns(3)
-            with col_p1:
-                st.markdown(f"""
-                <div style="background: #667eea; padding: 1rem; border-radius: 10px; color: white; text-align: center;">
-                    <div style="font-size: 0.9rem;">🧔 Renan pagou</div>
-                    <div style="font-size: 1.2rem; font-weight: bold;">R$ {result.renan_pagou_dividir + result.renan_pagou_casa:,.2f}</div>
-                    <div style="font-size: 0.8rem; opacity: 0.9;">Dividíveis: R$ {result.renan_pagou_dividir:,.2f}</div>
-                    <div style="font-size: 0.8rem; opacity: 0.9;">Casa: R$ {result.renan_pagou_casa:,.2f}</div>
-                </div>
-                """, unsafe_allow_html=True)
-            with col_p2:
-                st.markdown(f"""
-                <div style="background: #f093fb; padding: 1rem; border-radius: 10px; color: white; text-align: center;">
-                    <div style="font-size: 0.9rem;">👩 Aline pagou</div>
-                    <div style="font-size: 1.2rem; font-weight: bold;">R$ {result.aline_pagou_dividir + result.aline_pagou_casa:,.2f}</div>
-                    <div style="font-size: 0.8rem; opacity: 0.9;">Dividíveis: R$ {result.aline_pagou_dividir:,.2f}</div>
-                    <div style="font-size: 0.8rem; opacity: 0.9;">Casa: R$ {result.aline_pagou_casa:,.2f}</div>
-                </div>
-                """, unsafe_allow_html=True)
-            with col_p3:
-                st.markdown(f"""
-                <div style="background: #38ef7d; padding: 1rem; border-radius: 10px; color: white; text-align: center;">
-                    <div style="font-size: 0.9rem;">👨‍👩‍👦 Conta Família</div>
-                    <div style="font-size: 1.2rem; font-weight: bold;">R$ {result.familia_pagou_dividir:,.2f}</div>
-                    <div style="font-size: 0.8rem; opacity: 0.9;">(considerado 50/50)</div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            st.markdown("---")
-            st.markdown("### 💵 Valor do Acerto")
-            
-            saldo_acerto = float(result.aline_deve_renan)
-            if saldo_acerto > 0:
-                st.markdown(f"""
-                <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 2rem; border-radius: 15px; text-align: center; color: white;">
-                    <h2 style="margin: 0;">Aline deve pagar a Renan</h2>
-                    <h1 style="margin: 0.5rem 0; font-size: 3rem;">{html.escape(_fmt_brl(abs(saldo_acerto)))}</h1>
-                    <p style="margin: 0; opacity: 0.9;">Renan pagou (net): {html.escape(_fmt_brl(float(result.renan_pagou_total)))}</p>
-                    <p style="margin: 0; opacity: 0.9;">Renan deveria pagar: {html.escape(_fmt_brl(float(result.renan_deveria_pagar)))}</p>
-                </div>
-                """, unsafe_allow_html=True)
-            elif saldo_acerto < 0:
-                st.markdown(f"""
-                <div style="background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); padding: 2rem; border-radius: 15px; text-align: center; color: white;">
-                    <h2 style="margin: 0;">Renan deve pagar a Aline</h2>
-                    <h1 style="margin: 0.5rem 0; font-size: 3rem;">{html.escape(_fmt_brl(abs(saldo_acerto)))}</h1>
-                    <p style="margin: 0; opacity: 0.9;">Aline pagou (net): {html.escape(_fmt_brl(float(result.aline_pagou_total)))}</p>
-                    <p style="margin: 0; opacity: 0.9;">Aline deveria pagar: {html.escape(_fmt_brl(float(result.aline_deveria_pagar)))}</p>
-                </div>
-                """, unsafe_allow_html=True)
-            else:
-                st.success("🎉 Saldo zerado! Ninguém deve nada.")
-
-            st.markdown("---")
-            st.markdown("### 🧾 Transações consideradas no acerto")
-            with st.expander("Ver lista completa", expanded=False):
-                if details_df.empty:
-                    st.info("Sem transações consideradas.")
-                else:
-                    show_cols = [
-                        c
-                        for c in [
-                            "txn_date",
-                            "payment_method",
-                            "account",
-                            "description",
-                            "category",
-                            "subcategory",
-                            "person",
-                            "valor",
-                            "regra",
-                            "renan_deveria",
-                            "aline_deveria",
-                            "renan_delta",
-                            "source_file",
-                        ]
-                        if c in details_df.columns
-                    ]
-                    show = details_df[show_cols].copy()
-                    for col in ("valor", "renan_deveria", "aline_deveria", "renan_delta"):
-                        if col in show.columns:
-                            show[col] = show[col].apply(lambda v: _fmt_brl(float(v)))
-                    st.dataframe(show, width="stretch", hide_index=True)
-            
-            # Faturas por cartão
-            if result.por_cartao:
-                st.markdown("---")
-                st.markdown("### 💳 Faturas por Cartão")
-                
-                # Gradientes para variar os cards
-                card_gradients = [
-                    "linear-gradient(135deg, #667eea 0%, #764ba2 100%)",
-                    "linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)",
-                    "linear-gradient(135deg, #fa709a 0%, #fee140 100%)",
-                    "linear-gradient(135deg, #30cfd0 0%, #330867 100%)",
-                    "linear-gradient(135deg, #a8edea 0%, #fed6e3 100%)",
-                    "linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)",
-                ]
-                
-                cards_html = ['<div class="cc-grid">']
-                for idx, (card_name, card_total) in enumerate(result.por_cartao.items()):
-                    gradient = card_gradients[idx % len(card_gradients)]
-                    cards_html.append(f'<div class="cc-card" style="background: {gradient};">')
-                    cards_html.append('<div class="cc-card-title">')
-                    cards_html.append(f"<span>💳 {html.escape(str(card_name or 'Sem cartão'))}</span>")
-                    cards_html.append("</div>")
-                    cards_html.append(f'<div class="cc-card-value">{html.escape(_fmt_brl(float(card_total)))}</div>')
-                    cards_html.append("</div>")
-                cards_html.append("</div>")
-                st.markdown("\n".join(cards_html), unsafe_allow_html=True)
-            
-            # Contas da casa (se houver)
-            if not df_casa.empty:
-                st.markdown("---")
-                st.markdown(f"### 🏠 Contas da Casa de {meses_nomes[ref_month-1]}")
-                df_casa_display = df_casa[df_casa["amount"] < 0].copy()
-                if not df_casa_display.empty:
-                    df_casa_display["valor"] = df_casa_display["amount"].abs()
-                    df_casa_display = df_casa_display[["txn_date", "subcategory", "description", "valor", "person"]].copy()
-                    df_casa_display.columns = ["Data", "Tipo", "Descrição", "Valor", "Quem Pagou"]
-                    df_casa_display["Valor"] = df_casa_display["Valor"].apply(lambda x: f"R$ {x:,.2f}")
-                    st.dataframe(df_casa_display, width="stretch", hide_index=True)
-            
-            # Detalhamento por categoria (para dividir)
-            st.markdown("---")
-            st.markdown("### 📂 Gastos para Dividir (por Categoria)")
-            if details_df.empty:
-                st.info("Sem transações no acerto.")
-            else:
-                df_dividir = details_df[details_df["regra"] == "Dividir (50/50)"].copy() if "regra" in details_df.columns else details_df.iloc[0:0].copy()
-                if not df_dividir.empty:
-                    df_dividir = df_dividir[df_dividir["category"].notna()].copy() if "category" in df_dividir.columns else df_dividir.iloc[0:0].copy()
-                if not df_dividir.empty and "category" in df_dividir.columns:
-                    df_dividir = df_dividir[df_dividir["category"].astype(str).str.strip() != ""].copy()
-                if df_dividir.empty:
-                    st.info("Sem gastos para dividir por categoria.")
-                else:
-                    by_cat = df_dividir.groupby("category")["valor"].sum().sort_values(ascending=False).reset_index()
-                    by_cat.columns = ["Categoria", "Total (net)"]
-                    by_cat["Cada um paga (÷2)"] = by_cat["Total (net)"] / 2
-                    by_cat["Total (net)"] = by_cat["Total (net)"].apply(lambda v: _fmt_brl(float(v)))
-                    by_cat["Cada um paga (÷2)"] = by_cat["Cada um paga (÷2)"].apply(lambda v: _fmt_brl(float(v)))
-                    st.dataframe(by_cat, width="stretch", hide_index=True)
-            
-            # Lista de itens sem categoria
-            if result.qtd_sem_categoria > 0:
-                st.markdown("---")
-                st.warning(f"⚠️ **{result.qtd_sem_categoria} transações sem categoria** - Categorize antes de finalizar o acerto!")
-                with st.expander("Ver itens sem categoria"):
-                    if details_df.empty:
-                        st.info("Sem itens.")
-                    else:
-                        df_sem = details_df.copy()
-                        if "valor" in df_sem.columns:
-                            df_sem = df_sem[df_sem["valor"] > 0].copy()
-                        df_sem = (
-                            df_sem[df_sem["category"].isna() | (df_sem["category"] == "")].copy()
-                            if "category" in df_sem.columns
-                            else df_sem.iloc[0:0].copy()
-                        )
-                        if df_sem.empty:
-                            st.info("Sem itens.")
-                        else:
-                            show_cols = [c for c in ["txn_date", "description", "valor", "source_file"] if c in df_sem.columns]
-                            show = df_sem[show_cols].copy().rename(
-                                columns={
-                                    "txn_date": "Data",
-                                    "description": "Descrição",
-                                    "valor": "Valor",
-                                    "source_file": "Origem",
-                                }
-                            )
-                            if "Valor" in show.columns:
-                                show["Valor"] = show["Valor"].apply(lambda v: _fmt_brl(float(v)))
-                            if "Data" in show.columns:
-                                show = show.sort_values("Data", ascending=False)
-                            st.dataframe(show, width="stretch", hide_index=True)
-            
-            # Botão de exportar para Excel
-            st.markdown("---")
-            st.markdown("### 📥 Exportar Acerto")
-            
-            # Preparar dados para export
-            df_export = details_df.copy() if not details_df.empty else pd.DataFrame()
-            if not df_export.empty:
-                export_cols = [
-                    c
-                    for c in [
-                        "txn_date",
-                        "cash_date",
-                        "payment_method",
-                        "account",
-                        "description",
-                        "category",
-                        "subcategory",
-                        "valor",
-                        "person",
-                        "regra",
-                        "renan_deveria",
-                        "aline_deveria",
-                        "renan_delta",
-                        "source_file",
-                    ]
-                    if c in df_export.columns
-                ]
-                df_export = df_export[export_cols].copy()
-                df_export = df_export.rename(
-                    columns={
-                        "txn_date": "Data",
-                        "cash_date": "Impacto",
-                        "payment_method": "Forma",
-                        "account": "Cartão/Conta",
-                        "description": "Descrição",
-                        "category": "Categoria",
-                        "subcategory": "Subcategoria",
-                        "valor": "Valor (net)",
-                        "person": "Quem Pagou",
-                        "regra": "Regra",
-                        "renan_deveria": "Renan deveria",
-                        "aline_deveria": "Aline deveria",
-                        "renan_delta": "Saldo Renan",
-                        "source_file": "Origem",
-                    }
-                )
-
-                def _divide_label(regra: Any) -> str:
-                    s = str(regra or "")
-                    if s.startswith("Gastos Renan"):
-                        return "NÃO (Renan)"
-                    if s.startswith("Gastos Aline"):
-                        return "NÃO (Aline)"
-                    return "SIM"
-
-                if "Regra" in df_export.columns:
-                    df_export["Divide?"] = df_export["Regra"].apply(_divide_label)
-                df_export = df_export.sort_values([c for c in ["Origem", "Data"] if c in df_export.columns])
-            
-            # Gerar Excel em memória
-            from io import BytesIO
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                # Aba com todas as transações
-                if not df_export.empty:
-                    df_export.to_excel(writer, sheet_name='Transações', index=False)
-                
-                # Aba com contas da casa
-                if not df_casa.empty:
-                    df_casa_exp = df_casa[df_casa["amount"] < 0][["txn_date", "subcategory", "description", "amount", "person"]].copy()
-                    df_casa_exp.columns = ["Data", "Tipo", "Descrição", "Valor", "Quem Pagou"]
-                    df_casa_exp["Valor"] = df_casa_exp["Valor"].abs()
-                    df_casa_exp.to_excel(writer, sheet_name='Contas da Casa', index=False)
-                df_export.to_excel(writer, sheet_name='Transações', index=False)
-                
-                # Aba com resumo
-                resumo_data = {
-                    "Item": [
-                        "Total Despesas",
-                        "Gastos para Dividir",
-                        "Contas da Casa",
-                        "Gastos Individuais Renan",
-                        "Gastos Individuais Aline",
-                        "",
-                        "Renan pagou (dividíveis)",
-                        "Aline pagou (dividíveis)",
-                        "Família pagou (dividíveis)",
-                        "Renan pagou (casa)",
-                        "Aline pagou (casa)",
-                        "",
-                        "Aline deve a Renan" if result.aline_deve_renan >= 0 else "Renan deve a Aline"
-                    ],
-                    "Valor": [
-                        result.total_despesas,
-                        result.total_dividir,
-                        result.total_contas_casa,
-                        result.total_renan_individual,
-                        result.total_aline_individual,
-                        None,
-                        result.renan_pagou_dividir,
-                        result.aline_pagou_dividir,
-                        result.familia_pagou_dividir,
-                        result.renan_pagou_casa,
-                        result.aline_pagou_casa,
-                        None,
-                        abs(result.aline_deve_renan)
-                    ]
-                }
-                df_resumo = pd.DataFrame(resumo_data)
-                df_resumo.to_excel(writer, sheet_name='Resumo', index=False)
-                
-                # Aba por categoria
-                if not details_df.empty and "regra" in details_df.columns and "category" in details_df.columns:
-                    df_div = details_df[details_df["regra"] == "Dividir (50/50)"].copy()
-                    df_div = df_div[df_div["category"].notna()].copy()
-                    df_div = df_div[df_div["category"].astype(str).str.strip() != ""].copy()
-                    if not df_div.empty:
-                        by_cat_export = df_div.groupby("category")["valor"].sum().sort_values(ascending=False).reset_index()
-                        by_cat_export.columns = ["Categoria", "Total (net)"]
-                        by_cat_export["Cada um paga (÷2)"] = by_cat_export["Total (net)"] / 2
-                        by_cat_export.to_excel(writer, sheet_name='Por Categoria', index=False)
-            
-            excel_data = output.getvalue()
-            
-            st.download_button(
-                "📥 Baixar Excel do Acerto",
-                data=excel_data,
-                file_name=f"acerto_{meses_nomes[ref_month-1].lower()}_{ref_year}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary",
-            )
-
-    elif str(nav).startswith("Trans"):
-        st.subheader("Transacoes")
-        st.caption("Lance rapido: salva no banco e no templates/financas.xlsx.")
+    elif nav == "Lançamentos":
+        st.subheader("✏️ Lançamentos")
+        st.caption(f"📅 Período: **{mes_selecionado}** · Lance transações manuais e categorize importações.")
 
         expense_cats, expense_sub_map = _expense_categories(expense_categories_tree)
 
@@ -3226,126 +3048,104 @@ def main() -> None:
             st.dataframe(_display_df_ptbr(show), width="stretch", hide_index=True)
 
         st.divider()
-        st.caption("Categorizacao de cartao (hierarquica) - salva no Excel e no banco")
-        df_edit_src = pf_queries.load_transactions_df(conn, start=start, end=end)
-        if df_edit_src.empty:
-            st.info("Sem transacoes no periodo.")
+        st.subheader("🏷️ Categorização em lote")
+        _render_bulk_cat(conn, start, end, expense_categories_tree, unified_xlsx)
+    elif nav == review_label:
+        st.subheader("🔍 Revisão de Importação")
+        st.caption(
+            "Transações importadas via CSV que possivelmente duplicam um lançamento manual no Excel. "
+            "Escolha a ação para cada item."
+        )
+
+        reviews = pf_db.get_pending_reviews(conn)
+        if not reviews:
+            st.success("✅ Nenhuma transação aguardando revisão.")
         else:
-            df_cc = df_edit_src[df_edit_src["payment_method"] == "credit_card"].copy()
-            if df_cc.empty:
-                st.info("Sem transacoes de cartao no periodo.")
-            else:
-                if "id" in df_cc.columns:
-                    df_cc = df_cc.sort_values("id", ascending=False)
-                df_cc = df_cc.head(200).reset_index(drop=True)
+            st.info(f"**{len(reviews)}** transação(ões) aguardando revisão.")
+            for rev in reviews:
+                inc = rev.get("incoming", {})
+                inc_date = inc.get("txn_date", "—")
+                inc_desc = inc.get("description", "—")
+                inc_amount = inc.get("amount", 0.0)
+                inc_account = inc.get("account", "—")
 
-                expense_cats, expense_sub_map = _expense_categories(expense_categories_tree)
-                preview = df_cc[["txn_date", "account", "description", "amount", "category", "subcategory"]].copy()
-                preview["category"] = preview["category"].fillna("").astype(str)
-                preview["subcategory"] = preview["subcategory"].fillna("").astype(str)
-                st.dataframe(_display_df_ptbr(preview), width="stretch", hide_index=True)
+                # Fetch candidate transactions from DB
+                cand_ids: list[int] = rev.get("candidate_ids", [])
+                candidates: list[dict] = []
+                for cid in cand_ids:
+                    row = conn.execute(
+                        "SELECT * FROM transactions WHERE id = ?", (cid,)
+                    ).fetchone()
+                    if row:
+                        candidates.append(dict(row))
 
-                def _tx_label(i: int) -> str:
-                    r = df_cc.iloc[i]
-                    dt = _to_date(r.get("txn_date"))
-                    dt_s = dt.isoformat() if dt else str(r.get("txn_date") or "")
-                    acc = str(r.get("account") or "").strip()
-                    desc = str(r.get("description") or "").strip()
-                    amt = float(r.get("amount") or 0.0)
-                    return f"{dt_s} | {acc} | {desc[:80]} | {_fmt_brl(abs(amt))}"
+                rev_id = rev["id"]
+                with st.expander(
+                    f"📅 {inc_date}  |  {inc_desc}  |  R$ {abs(float(inc_amount)):.2f}",
+                    expanded=True,
+                ):
+                    col_csv, col_manual = st.columns(2)
+                    with col_csv:
+                        st.markdown("**Importado do CSV**")
+                        st.write(f"Data: `{inc_date}`")
+                        st.write(f"Descrição: `{inc_desc}`")
+                        st.write(f"Valor: `R$ {float(inc_amount):.2f}`")
+                        st.write(f"Cartão: `{inc_account}`")
+                        st.write(f"Arquivo: `{inc.get('source_file', '—')}`")
+                    with col_manual:
+                        st.markdown("**Lançamento(s) existente(s)**")
+                        if candidates:
+                            for cand in candidates:
+                                st.write(f"Data: `{cand.get('txn_date', '—')}`")
+                                st.write(f"Descrição: `{cand.get('description', '—')}`")
+                                st.write(f"Valor: `R$ {float(cand.get('amount', 0)):.2f}`")
+                                st.write(f"Categoria: `{cand.get('category') or '—'}`")
+                                st.write(f"Subcategoria: `{cand.get('subcategory') or '—'}`")
+                                st.write(f"Pessoa: `{cand.get('person') or '—'}`")
+                                st.write(f"Notas: `{cand.get('notes') or '—'}`")
+                                st.divider()
+                        else:
+                            st.write("_(não encontrado)_")
 
-                idx = st.selectbox(
-                    "Transacao para categorizar",
-                    options=list(range(len(df_cc))),
-                    format_func=_tx_label,
-                    key="tx_cc_pick_idx",
-                )
-                row = df_cc.iloc[int(idx)]
-                row_hash = str(row.get("row_hash") or "").strip()
-                cur_cat = str(row.get("category") or "").strip()
-                cur_sub = str(row.get("subcategory") or "").strip()
-                cur_reemb = bool(int(row.get("reimbursable") or 0) == 1)
-
-                cat_options = [""] + expense_cats
-                cat_idx = cat_options.index(cur_cat) if cur_cat in cat_options else 0
-                selected_cat = st.selectbox("Categoria", cat_options, index=cat_idx, key=f"tx_cat_{row_hash}")
-
-                sub_options = [""] + expense_sub_map.get(selected_cat, [])
-                sub_idx = sub_options.index(cur_sub) if cur_sub in sub_options else 0
-                selected_sub = st.selectbox("Subcategoria", sub_options, index=sub_idx, key=f"tx_sub_{row_hash}")
-
-                selected_reemb = st.checkbox("Reembolsavel", value=cur_reemb, key=f"tx_reemb_{row_hash}")
-
-                if (selected_cat, selected_sub, selected_reemb) != (cur_cat, cur_sub, cur_reemb):
-                    try:
-                        updates = [
-                            {
-                                "row_hash": row_hash,
-                                "category": selected_cat or None,
-                                "subcategory": selected_sub or None,
-                                "reimbursable": selected_reemb,
-                            }
+                    # Select which candidate to merge into (if multiple)
+                    merge_target_id: int | None = cand_ids[0] if cand_ids else None
+                    if len(cand_ids) > 1:
+                        cand_labels = [
+                            f"[{c.get('id')}] {c.get('description', '')} {c.get('txn_date', '')}"
+                            for c in candidates
                         ]
-                        updated_db, missing_db = pf_db.bulk_update_categories_by_row_hash(
-                            conn, updates, allow_clear=True
+                        sel_idx = st.selectbox(
+                            "Mesclar com qual lançamento?",
+                            options=list(range(len(cand_ids))),
+                            format_func=lambda i: cand_labels[i],
+                            key=f"sel_{rev_id}",
                         )
-                        updated_xlsx, missing_xlsx = pf_excel_unified.update_credit_card_categories(
-                            unified_xlsx, updates=updates
-                        )
-                        st.success(
-                            f"Categoria salva. DB: {updated_db} (faltantes {missing_db}) | "
-                            f"Excel: {updated_xlsx} (faltantes {missing_xlsx})"
-                        )
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Falha ao salvar categorias: {e}")
-    elif nav == "Config":
-        st.subheader("Cartões")
-        st.json({k: vars(v) for k, v in cards.items()})
-        st.caption("Editar em `config/cards.json`.")
+                        merge_target_id = cand_ids[sel_idx]
 
-        st.subheader("Regras (auto-categorização)")
-        st.caption("Editar em `config/rules.json`.")
-        st.json(rules_cfg)
-        with st.expander("Exemplo de regra (copiar/colar)", expanded=False):
-            st.code(
-                """{
-  "rules": [
-    {
-      "name": "Uber",
-      "enabled": true,
-      "match": {
-        "description_contains": ["uber"],
-        "payment_methods": ["credit_card", "debit"],
-        "kind": "expense"
-      },
-      "set": { "category": "Transporte", "subcategory": "Aplicativo" }
-    }
-  ]
-}""",
-                language="json",
-            )
-        if st.button("Aplicar regras aos lançamentos sem categoria/subcategoria", type="secondary"):
-            try:
-                updated = pf_rules_engine.apply_rules_to_transactions(conn, rules)
-                st.success(f"{updated} lançamento(s) atualizado(s).")
-                if updated:
-                    sync_excels_ui()
-            except Exception as e:  # noqa: BLE001
-                st.warning(str(e))
-
-        st.subheader("Categorias (despesas)")
-        st.caption("Editar em `config/categories_expenses.json`.")
-        st.json(expense_categories_tree)
-
-        st.subheader("Categorias (receitas)")
-        st.caption("Editar em `config/categories_income.json`.")
-        st.json(income_categories_tree)
-
-        st.subheader("Recebimentos (eventos)")
-        st.caption("Editar em `config/pay_schedule.json`.")
-        st.json(pay_schedule)
-
+                    b1, b2, b3 = st.columns(3)
+                    with b1:
+                        if st.button("✅ Mesclar (manter edições)", key=f"merge_{rev_id}",
+                                     help="Mantém o lançamento manual e atualiza com dados do CSV"):
+                            pf_db.resolve_pending_review(
+                                conn, review_id=rev_id, resolution="merge",
+                                merge_into_id=merge_target_id
+                            )
+                            st.rerun()
+                    with b2:
+                        if st.button("➕ Criar como nova", key=f"create_{rev_id}",
+                                     help="Insere o lançamento CSV como uma nova transação separada"):
+                            pf_db.resolve_pending_review(
+                                conn, review_id=rev_id, resolution="create_new"
+                            )
+                            st.rerun()
+                    with b3:
+                        if st.button("🗑️ Ignorar CSV", key=f"skip_{rev_id}",
+                                     help="Descarta o lançamento do CSV, mantém somente o manual"):
+                            pf_db.resolve_pending_review(
+                                conn, review_id=rev_id, resolution="skip"
+                            )
+                            st.rerun()
 
 if __name__ == "__main__":
     main()
+
